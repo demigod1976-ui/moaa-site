@@ -49,6 +49,11 @@
       return '<a class="b" href="' + x[1].replace(/"/g, '&quot;') + '">' + x[0] + '</a>';
     }).join('');
   }
+  // 카톡 자동 탈출 시험: 주소에 #...&k=1 이 있고 카톡 안이면 누르지 않고 바로 시도
+  if (h.get('k') === '1' && /KAKAOTALK/i.test(navigator.userAgent)) {
+    var back = location.href.replace(/&k=1/, '');
+    location.href = 'kakaotalk://web/openExternal?url=' + enc(back);
+  }
   em.addEventListener('input', render);
   render();
   var dm = 'n/a';
