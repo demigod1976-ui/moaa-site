@@ -51,9 +51,41 @@ function gateEscapeUrl(info, url) {
   return null;
 }
 
+/** 막힘 화면용: 구글 계정 고르기 → 고른 계정으로 같은 앱 주소를 다시 연다 */
+function gateSwitchUrl(appUrl) {
+  return 'https://accounts.google.com/AccountChooser?continue=' + encodeURIComponent(appUrl);
+}
+
 /** 구글 계정 선택 주소(이메일 있으면 미리 고름) */
 function gateChooserUrl(appUrl, email) {
   return email
     ? 'https://accounts.google.com/AccountChooser?Email=' + encodeURIComponent(email) + '&continue=' + encodeURIComponent(appUrl)
     : appUrl;
+}
+
+/* ---------- 홈 화면에 추가 안내 (G6, 설계 §6-5) ---------- */
+
+/** [나중에 할게요]를 이만큼 누르면 더 띄우지 않는다 (설정 '홈 화면에 추가하는 방법'으로는 언제든 볼 수 있다) */
+var HOME_HINT_LATER_MAX = 3;
+
+/**
+ * 부팅 직후 안내를 띄울까. state = 사용자 속성 HOMEHINT { later, done, lastDay },
+ * ctx = { os: gateBrowser().os, standalone: navigator.standalone === true, today: boot.today }.
+ * 끝냄(done)·아이콘으로 열림(standalone)·컴퓨터(os other)·[나중에] 3번·오늘 이미 [나중에](하루에 한 번까지, G7)면 false.
+ * 첫 접속 단계(onboard)·가계부 연결과 상관없다 — 둘보다 먼저
+ */
+function homeHintDue(state, ctx) {
+  if (!ctx || ctx.standalone || (ctx.os !== 'ios' && ctx.os !== 'android')) return false;
+  var s = state || {};
+  if (s.done === true) return false;
+  if (s.lastDay && s.lastDay === ctx.today) return false;
+  return !((Number(s.later) || 0) >= HOME_HINT_LATER_MAX);
+}
+
+/** 어느 브라우저 그림인가: iPhone 크롬(CriOS) 'chrome' · Android 'android' · 그 밖(iPhone Safari, 컴퓨터에서 설정으로 열 때) 'safari' */
+function homeHintVariant(ua) {
+  var os = gateBrowser(ua).os;
+  if (os === 'android') return 'android';
+  if (os === 'ios' && /CriOS\//.test(String(ua || ''))) return 'chrome';
+  return 'safari';
 }

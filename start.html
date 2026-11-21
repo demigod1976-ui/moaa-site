@@ -51,8 +51,19 @@
   .gsteps .s.done { color: var(--ink); } .gsteps .s.done .n { background: var(--soft); color: var(--green); }
   .gsteps .s.done .n svg.i { width: 14px; height: 14px; stroke-width: 2.6; }
   .start .btn { margin-top: 20px; }
+  .start .lead { font-size: 15px; color: var(--sub); margin: 8px 0 0; line-height: 1.5; word-break: keep-all; }
   .next { margin-top: 18px; }
   .next .lb { font-size: 13px; color: var(--sub); text-align: center; margin-bottom: 10px; }
+
+  /* 화면 2 (① 구글 로그인·허용 설명, 피드백 106) — 칩은 앱 안 홈 화면 안내의 "2 · 홈 화면에 모아 놓기" 칩(src/ui/Styles.html .hh-chip)과 같은 모양 */
+  .start.login { padding-top: 12px; }
+  .back { display: inline-flex; align-items: center; gap: 2px; height: 44px; margin-left: -8px; padding: 0 10px 0 4px; font-size: 15px; color: var(--sub); }
+  .back svg.i { width: 22px; height: 22px; }
+  .stepchip { display: inline-flex; align-items: center; margin-top: 10px; font-size: 13px; font-weight: 500; color: var(--green); background: var(--soft); border-radius: 99px; padding: 5px 12px; }
+  .login .title { margin-top: 12px; }
+  .login .next { margin-top: 20px; }
+  .safe { display: flex; align-items: center; gap: 10px; background: var(--note); border-radius: 16px; padding: 12px 14px; margin-top: 18px; font-size: 14px; line-height: 1.45; word-break: keep-all; }
+  .safe svg.i { width: 20px; height: 20px; color: var(--green); }
 
   /* 구글 권한 화면 도식 (구글 로고·실제 화면 복제 아님) */
   .gmock { background: var(--card); border-radius: 18px; padding: 16px 16px 14px; max-width: 300px; margin: 0 auto; box-shadow: inset 0 0 0 1px var(--line); }
@@ -142,6 +153,11 @@
     .gsteps { margin-top: 16px; }
     .gsteps .s { height: 44px; }
     .start .btn { margin-top: 14px; }
+    .start.login { padding-top: 6px; }
+    .stepchip { margin-top: 4px; }
+    .login .title { margin-top: 8px; }
+    .login .next { margin-top: 14px; }
+    .safe { margin-top: 12px; padding: 10px 12px; }
     .ill { margin-top: 16px; }
     .pane .art { height: 92px; }
   }
@@ -150,12 +166,13 @@
 <body>
 <div class="page">
 
-  <!-- 시작 (구매자·가족·이메일 없음) -->
+  <!-- 시작 (구매자·가족·이메일 없음): 화면 1 환영 → [시작하기] → 화면 2 ① 구글 로그인·허용 설명 → [구글 로그인하기] → 구글 (피드백 106, 설계 §6-1-1) -->
   <div id="sStart" hidden>
-    <div class="start">
+    <div class="start" id="sWelcome">
       <div class="logo">모아</div>
-      <div class="title" id="titleEmail" hidden><span class="em" id="emailTitle"></span> 계정으로<br>우리 가계부를 시작해요</div>
+      <div class="title" id="titleEmail" hidden><span class="em" id="emailTitle"></span> 님, 환영해요</div>
       <div class="title" id="titleNone" hidden>구매할 때 적은 구글 계정으로<br>시작해요</div>
+      <p class="lead" id="lead">우리 가계부를 세 단계로 시작해요</p>
       <div class="gsteps">
         <div class="s now"><span class="n">1</span>구글 로그인·허용<span class="here">지금 여기</span></div>
         <div class="s"><span class="n">2</span>홈 화면에 모아 놓기</div>
@@ -163,6 +180,12 @@
       </div>
       <button class="btn" id="goBtn">시작하기</button>
       <button class="link" id="helpBtn">열리지 않나요?</button>
+    </div>
+
+    <div class="start login" id="sLogin" hidden>
+      <button class="back" id="backBtn"><svg class="i" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>이전</button>
+      <div><span class="stepchip">1 · 구글 로그인·허용</span></div>
+      <div class="title">구글 계정으로 로그인하고<br>모아를 허용해요</div>
       <div class="next">
         <div class="lb">다음에 이런 화면이 나와요</div>
         <div class="gmock">
@@ -173,6 +196,9 @@
           <div class="row"><span class="cancel">취소</span><span class="ok">허용</span><span class="tag">여기를 눌러요</span></div>
         </div>
       </div>
+      <div class="safe"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>가계부는 내 구글 드라이브에만 저장돼요</span></div>
+      <button class="btn" id="loginBtn">구글 로그인하기</button>
+      <button class="link" id="helpBtn2">열리지 않나요?</button>
     </div>
 
     <div class="sheet-wrap" id="sheet" hidden>
@@ -280,13 +306,31 @@
       $('titleEmail').hidden = false;
     } else {
       $('titleNone').hidden = false;
+      $('lead').textContent = '세 단계면 끝나요'; // 제목이 이미 "시작해요"라 겹치지 않게
     }
-    if (h.role === 'family') $('third').textContent = '가족 가계부에 연결하기';
-    $('goBtn').addEventListener('click', function () { location.href = gateChooserUrl(APP_URL, h.email); });
+    if (h.role === 'family') {
+      $('lead').textContent = '가족 가계부에 함께해요';
+      $('third').textContent = '가족 가계부에 연결하기';
+    }
+    // 화면 1 ↔ 2: 페이지 안에서만 바꾼다. 화면 2 는 기록(pushState)을 하나 쌓아 브라우저 뒤로 가기가 화면 1 로 오게 한다 (#e= 는 그대로)
+    var showStep = function (n) {
+      $('sWelcome').hidden = n !== 1;
+      $('sLogin').hidden = n !== 2;
+      $('sheet').hidden = true;
+      window.scrollTo(0, 0);
+    };
+    $('goBtn').addEventListener('click', function () { history.pushState({ s: 2 }, ''); showStep(2); });
+    $('backBtn').addEventListener('click', function () {
+      if (history.state && history.state.s === 2) history.back(); else showStep(1);
+    });
+    window.addEventListener('popstate', function (e) { showStep(e.state && e.state.s === 2 ? 2 : 1); });
+    $('loginBtn').addEventListener('click', function () { location.href = gateChooserUrl(APP_URL, h.email); });
     $('helpBtn').addEventListener('click', function () { $('sheet').hidden = false; });
+    $('helpBtn2').addEventListener('click', function () { $('sheet').hidden = false; });
     $('closeBtn').addEventListener('click', function () { $('sheet').hidden = true; });
     $('closeScrim').addEventListener('click', function () { $('sheet').hidden = true; });
     $('copyBtn1').addEventListener('click', copyAddress);
+    showStep(history.state && history.state.s === 2 ? 2 : 1); // 화면 2 에서 새로 고침하면 화면 2 그대로
     show('sStart');
   }
 </script>
