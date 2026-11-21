@@ -25,6 +25,7 @@
 <div class="box" id="links"></div>
 <script>
   var APP = 'https://script.google.com/macros/s/AKfycbwh8lzbmcLErjvd1Fttk1cpmzqKNgAWvR8U4FV7yGdxG5XDQ-C0FK5BjX8IGk9WRGor/exec';
+  var LAUNCHER = 'https://script.google.com/macros/s/AKfycbzwKIlX-PpHv2IoMDwmwlfEerDuOkIDd10j4cUlc4zT--EmEC5jYzf9TYlU762btvv3BA/exec';
   var em = document.getElementById('em');
   var h = new URLSearchParams(location.hash.slice(1));
   em.value = h.get('e') || '';
@@ -37,7 +38,8 @@
       ['2. 계정 선택(AccountChooser)', 'https://accounts.google.com/AccountChooser?Email=' + enc(e) + '&continue=' + enc(target)],
       ['3. 로그인 화면(ServiceLogin)', 'https://accounts.google.com/ServiceLogin?Email=' + enc(e) + '&continue=' + enc(target)],
       ['4. authuser=이메일', target + '&authuser=' + enc(e)],
-      ['5. 카톡 → 바깥 브라우저', 'kakaotalk://web/openExternal?url=' + enc(location.href)]
+      ['5. 카톡 → 바깥 브라우저', 'kakaotalk://web/openExternal?url=' + enc(location.href)],
+      ['6. 문지기 페이지 열기', LAUNCHER + '?e=' + enc(e)]
     ];
     document.getElementById('links').innerHTML = L.map(function (x) {
       return '<a class="b" href="' + x[1].replace(/"/g, '&quot;') + '">' + x[0] + '</a>';
