@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>개인정보처리방침 · 예산 가계부</title>
+  <style>
+    :root { --bg: #ffffff; --text: #1f2933; --muted: #6b7280; --line: #e5e7eb; --primary: #2563eb; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111418; --text: #e5e7eb; --muted: #9ca3af; --line: #2d333b; --primary: #60a5fa; } }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; line-height: 1.75; }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 26px; } h2 { font-size: 18px; margin-top: 28px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+    a { color: var(--primary); } .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>개인정보처리방침</h1>
+  <p class="muted">예산 가계부 (운영: Axon Bridge) · 시행일 2026년 11월 13일</p>
+
+  <h2>1. 가계부 데이터의 저장 위치</h2>
+  <p>지출 기록, 예산, 계정, 자동 기록 항목 등 가계부의 모든 데이터는 <b>사용자 본인의 구글 드라이브에 있는 스프레드시트</b>에만 저장됩니다. 운영자는 이 데이터를 수집·보관·열람·제3자 제공하지 않습니다. 가족이 기록한 내용도 구매자의 스프레드시트에 바로 저장되며 운영자를 거치지 않습니다.</p>
+
+  <h2>2. 운영자가 보관하는 정보</h2>
+  <table>
+    <tr><th>항목</th><th>목적</th><th>보관 기간</th></tr>
+    <tr><td>구매자와 등록된 가족의 구글 이메일 주소, 구매일, 만료일, 판매 메모</td><td>사용 권한(라이선스) 확인</td><td>사용 기간 동안. 삭제 요청 시 지체 없이 삭제</td></tr>
+    <tr><td>구매자 가계부 스프레드시트의 파일 ID</td><td>가족이 같은 가계부에 연결하도록 안내</td><td>위와 같음</td></tr>
+  </table>
+  <p>운영자는 파일 ID로 가계부 내용을 열람할 권한이 없습니다(가계부는 구매자와 구매자가 공유한 가족에게만 공유됩니다).</p>
+
+  <h2>3. 요청하는 구글 권한과 용도</h2>
+  <table>
+    <tr><th>권한</th><th>용도</th></tr>
+    <tr><td>drive.file — 앱이 만들었거나 사용자가 선택한 파일 보기·수정</td><td>가계부 시트 생성·기록, 등록된 가족에게 시트 공유, 가족의 가계부 연결</td></tr>
+    <tr><td>userinfo.email — 이메일 주소 보기</td><td>사용 권한 확인</td></tr>
+    <tr><td>script.scriptapp — 사용자가 없을 때 실행</td><td>매일 자동 기록 항목 기록</td></tr>
+  </table>
+  <p>앱은 구글 사용자 데이터를 위 용도 외에 사용하지 않으며, 광고·판매·AI 학습 등에 사용하거나 제3자에게 전송하지 않습니다.</p>
+
+  <h2>4. 삭제와 권한 해제</h2>
+  <ul>
+    <li>가계부 데이터 삭제: 구글 드라이브에서 가계부 스프레드시트를 삭제하면 됩니다.</li>
+    <li>앱 권한 해제: 구글 계정 → 보안 → 타사 앱 및 서비스에서 "예산 가계부"의 액세스를 삭제합니다.</li>
+    <li>운영자 보관 정보(이메일 등) 삭제: 아래 이메일로 요청하면 지체 없이 삭제합니다.</li>
+  </ul>
+
+  <h2>5. 문의</h2>
+  <p><a href="mailto:support@axonbridge.org">support@axonbridge.org</a></p>
+
+  <p><a href="index.html">← 예산 가계부 소개</a></p>
+</main>
+</body>
+</html>

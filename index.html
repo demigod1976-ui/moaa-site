@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>예산 가계부</title>
+  <meta name="description" content="예산을 먼저 세우고, 남은 예산을 보며 지출을 결정하는 구글 기반 지출 가계부">
+  <style>
+    :root { --bg: #ffffff; --text: #1f2933; --muted: #6b7280; --line: #e5e7eb; --primary: #2563eb; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111418; --text: #e5e7eb; --muted: #9ca3af; --line: #2d333b; --primary: #60a5fa; } }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; line-height: 1.7; }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 28px; margin: 0 0 4px; } h2 { font-size: 19px; margin-top: 32px; }
+    .lead { color: var(--muted); font-size: 17px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+    code { font-size: 12px; word-break: break-all; }
+    a { color: var(--primary); }
+    footer { margin-top: 40px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>예산 가계부</h1>
+  <p class="lead">예산을 먼저 세우고, 사기 전에 남은 예산을 확인하고, 월말에 계획 대비 결과를 돌아보는 지출 가계부입니다.</p>
+
+  <h2>무엇을 하나요</h2>
+  <ul>
+    <li>지출 계정(식비·외식비 등)별로 월 예산을 세웁니다. 예산은 매월 1일에 새로 시작합니다.</li>
+    <li>앱을 열면 이번 달 남은 예산이 먼저 보이고, 휴대폰에서 지출을 빠르게 기록할 수 있습니다.</li>
+    <li>매달 같은 날 나가는 고정 지출은 자동으로 기록합니다.</li>
+    <li>월말에는 사용률·절감액·전월 대비·전년 같은 달 대비를 보고, 어느 항목이 과했는지 거래까지 내려가 확인합니다.</li>
+    <li>가족이 각자 자기 휴대폰에서 같은 가계부에 기록할 수 있습니다.</li>
+  </ul>
+
+  <h2>데이터는 어디에 저장되나요</h2>
+  <p>가계부 데이터는 <b>사용자 본인의 구글 드라이브</b>에 만들어지는 스프레드시트 한 개에만 저장됩니다. 판매자는 가계부 데이터를 수집하거나 열람하지 않습니다.</p>
+
+  <h2>요청하는 권한</h2>
+  <table>
+    <tr><th>권한</th><th>용도</th></tr>
+    <tr><td>앱이 만들었거나 사용자가 선택한 구글 드라이브 파일 보기·수정<br><code>https://www.googleapis.com/auth/drive.file</code></td><td>사용자 드라이브에 가계부 시트를 만들고 기록합니다. 가족은 공유받은 가계부를 한 번 선택해 연결합니다. 그 밖의 파일에는 접근하지 않습니다.</td></tr>
+    <tr><td>이메일 주소 보기<br><code>https://www.googleapis.com/auth/userinfo.email</code></td><td>구매 시 등록한 계정인지 확인합니다.</td></tr>
+    <tr><td>사용자가 없을 때 실행<br><code>https://www.googleapis.com/auth/script.scriptapp</code></td><td>매일 오전 자동 기록 항목(고정 지출)을 기록합니다.</td></tr>
+  </table>
+
+  <p><a href="privacy.html">개인정보처리방침</a></p>
+
+  <footer>문의: <a href="mailto:support@axonbridge.org">support@axonbridge.org</a> · Axon Bridge</footer>
+</main>
+</body>
+</html>
