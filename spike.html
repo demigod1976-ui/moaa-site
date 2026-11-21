@@ -39,7 +39,11 @@
       ['3. 로그인 화면(ServiceLogin)', 'https://accounts.google.com/ServiceLogin?Email=' + enc(e) + '&continue=' + enc(target)],
       ['4. authuser=이메일', target + '&authuser=' + enc(e)],
       ['5. 카톡 → 바깥 브라우저', 'kakaotalk://web/openExternal?url=' + enc(location.href)],
-      ['6. 문지기 페이지 열기', LAUNCHER + '?e=' + enc(e)]
+      ['6. 문지기 페이지 열기', LAUNCHER + '?e=' + enc(e)],
+      ['7. 문지기 /u/0/', LAUNCHER.replace('/macros/s/', '/macros/u/0/s/') + '?e=' + enc(e)],
+      ['8. 문지기 /u/1/', LAUNCHER.replace('/macros/s/', '/macros/u/1/s/') + '?e=' + enc(e)],
+      ['9. 앱 /u/0/', APP.replace('/macros/s/', '/macros/u/0/s/') + '?diag=1'],
+      ['10. 앱 /u/1/', APP.replace('/macros/s/', '/macros/u/1/s/') + '?diag=1']
     ];
     document.getElementById('links').innerHTML = L.map(function (x) {
       return '<a class="b" href="' + x[1].replace(/"/g, '&quot;') + '">' + x[0] + '</a>';
