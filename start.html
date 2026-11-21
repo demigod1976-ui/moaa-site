@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>모아 시작하기</title>
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<style>
+  /* 공개 페이지는 앱 본체 CSS를 받을 수 없으므로 Blocked.html처럼 숲 톤 토큰만 같은 값으로 둔다 (src/ui/Styles.html :root · 다크) */
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --soft: #e3ebdb; --soft-2: #eef3ea; --note: #eeeae3; --ink: #20352a; --sub: #7c8781;
+    --green: #4a6e56; --primary: #3d6a4f; --track: #e7eae3; --line: #ebe9e4; --on-primary: #fff;
+    --page-edge: #dcdad4; --scrim: rgba(32,53,42,.3); --grab: #d6d9d2; --mock: #e4e6e1; --mock-bg: #f2f3f0;
+    --r-card: 22px; --r-btn: 16px;
+    --font: "Noto Sans KR", -apple-system, "Apple SD Gothic Neo", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-scheme="light"]) {
+    --bg: #232b28; --card: #2f3934; --soft: #384f41; --soft-2: #33443a; --note: #363e39; --ink: #e3ebe5; --sub: #a3b0a9;
+    --green: #9edcb2; --primary: #3f7c56; --track: #414c46; --line: #3f4843; --page-edge: #181e1b; --scrim: rgba(0,0,0,.55);
+    --grab: #4a554f; --mock: #46514b; --mock-bg: #29322e;
+  } }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: var(--bg); }
+  button { font: inherit; color: inherit; border: none; background: none; padding: 0; cursor: pointer; }
+  body { margin: 0; font-family: var(--font); color: var(--ink); font-size: 15px; background: var(--bg); }
+  svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
+  [hidden] { display: none !important; }
+  .page { max-width: 430px; margin: 0 auto; min-height: 100vh; min-height: 100dvh; background: var(--bg); position: relative; }
+  .logo { font-size: 26px; font-weight: 700; letter-spacing: -0.6px; color: var(--primary); }
+  .btn { width: 100%; height: 56px; border-radius: var(--r-btn); background: var(--primary); color: var(--on-primary); font-size: 16px; font-weight: 700; }
+  .btn.soft { background: var(--soft); color: var(--green); display: flex; align-items: center; justify-content: center; gap: 8px; height: 52px; }
+  .btn.soft svg.i { width: 20px; height: 20px; }
+  .btn.ghost { background: none; color: var(--sub); font-weight: 500; height: 44px; }
+  .link { display: block; margin: 6px auto 0; height: 44px; padding: 0 12px; font-size: 14px; color: var(--sub); text-decoration: underline; text-underline-offset: 3px; }
+  .toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--ink); color: var(--bg); font-size: 13px; padding: 10px 16px; border-radius: 99px; white-space: nowrap; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
+  .toast.on { opacity: .94; }
+  .start { padding: 32px 24px 36px; }
+  .start .title { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.45; margin: 14px 0 0; word-break: keep-all; }
+  .start .title .em { color: var(--green); overflow-wrap: anywhere; }
+  .gsteps { background: var(--card); border-radius: var(--r-card); padding: 6px 16px; margin-top: 22px; }
+  .gsteps .s { display: flex; align-items: center; gap: 12px; height: 48px; font-size: 15px; color: var(--sub); }
+  .gsteps .s + .s { border-top: 1px solid var(--line); }
+  .gsteps .n { width: 24px; height: 24px; border-radius: 50%; background: var(--track); color: var(--sub); font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
+  .gsteps .s.now { color: var(--ink); font-weight: 500; }
+  .gsteps .s.now .n { background: var(--primary); color: var(--on-primary); }
+  .gsteps .here { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--green); background: var(--soft); border-radius: 99px; padding: 3px 9px; white-space: nowrap; }
+  .gsteps .s.done { color: var(--ink); } .gsteps .s.done .n { background: var(--soft); color: var(--green); }
+  .gsteps .s.done .n svg.i { width: 14px; height: 14px; stroke-width: 2.6; }
+  .start .btn { margin-top: 20px; }
+  .next { margin-top: 18px; }
+  .next .lb { font-size: 13px; color: var(--sub); text-align: center; margin-bottom: 10px; }
+
+  /* 구글 권한 화면 도식 (구글 로고·실제 화면 복제 아님) */
+  .gmock { background: var(--card); border-radius: 18px; padding: 16px 16px 14px; max-width: 300px; margin: 0 auto; box-shadow: inset 0 0 0 1px var(--line); }
+  .gmock .top { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--sub); }
+  .gmock .dot { width: 18px; height: 18px; border-radius: 50%; background: var(--mock); flex: none; }
+  .gmock .app { font-size: 16px; font-weight: 700; margin-top: 12px; }
+  .gmock .acct { display: inline-block; max-width: 100%; overflow-wrap: anywhere; font-size: 11px; color: var(--sub); border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; margin-top: 6px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--mock); margin-top: 8px; }
+  .gmock .bars { margin-top: 6px; }
+  .gmock .row { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin-top: 16px; position: relative; }
+  .gmock .cancel { font-size: 13px; color: var(--sub); }
+  .gmock .ok { font-size: 13px; font-weight: 700; color: var(--on-primary); background: var(--primary); border-radius: 99px; padding: 7px 18px; box-shadow: 0 0 0 3px var(--card), 0 0 0 5.5px var(--primary); }
+  .tag { position: absolute; font-size: 11px; font-weight: 700; color: var(--on-primary); background: var(--primary); border-radius: 8px; padding: 3px 7px; white-space: nowrap; }
+  .tag::after { content: ""; position: absolute; left: 50%; bottom: -4px; margin-left: -4px; border: 4px solid transparent; border-bottom: 0; border-top-color: var(--primary); }
+  .gmock .tag { right: 4px; top: -30px; }
+
+  /* "열리지 않나요?" 시트 */
+  .sheet-wrap { position: fixed; inset: 0; z-index: 20; }
+  .scrim { position: absolute; inset: 0; background: var(--scrim); }
+  .sheet { position: absolute; left: 50%; transform: translateX(-50%); width: 100%; max-width: 430px; bottom: 0; max-height: calc(100% - 24px); overflow-y: auto; background: var(--bg); border-radius: 24px 24px 0 0; padding: 10px 24px 24px; }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--grab); margin: 0 auto 14px; }
+  .sheet h3 { font-size: 19px; margin: 0; letter-spacing: -0.3px; }
+  .sheet .why { font-size: 14px; color: var(--sub); line-height: 1.55; margin: 6px 0 0; word-break: keep-all; }
+  .hsteps { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .hs { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 16px; padding: 10px 12px; min-height: 64px; }
+  .hs .n { width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--on-primary); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
+  .hs .t { flex: 1; min-width: 0; font-size: 14px; line-height: 1.45; word-break: keep-all; }
+  .hs .t b { font-weight: 700; }
+  .hs .pic { flex: none; width: 112px; height: 44px; border-radius: 10px; background: var(--mock-bg); display: flex; align-items: center; justify-content: center; position: relative; }
+  .hs .btn.soft { width: auto; height: 40px; padding: 0 14px; font-size: 14px; flex: none; }
+  .sheet .after { font-size: 13px; color: var(--sub); margin: 14px 0 0; line-height: 1.5; text-align: center; }
+  .sheet .btn.ghost { margin-top: 6px; }
+
+  /* 작은 그림 부품 */
+  .tb { display: flex; justify-content: space-around; align-items: center; width: 100%; height: 30px; color: var(--sub); }
+  .tb svg.i { width: 15px; height: 15px; }
+  .hl { color: var(--green); border-radius: 50%; box-shadow: 0 0 0 2px var(--primary); padding: 3px; background: var(--card); }
+  .hl svg.i { stroke-width: 2.2; }
+  .seg { display: flex; gap: 4px; font-size: 10px; }
+  .seg span { border-radius: 6px; padding: 3px 5px; color: var(--sub); background: var(--card); white-space: nowrap; }
+  .seg span.on { color: var(--on-primary); background: var(--primary); font-weight: 700; }
+  .urlbar { width: 92px; height: 22px; border-radius: 7px; background: var(--card); position: relative; }
+  .bubble { position: absolute; left: 50%; top: -15px; transform: translateX(-50%); font-size: 10px; font-weight: 700; color: var(--on-primary); background: var(--primary); border-radius: 6px; padding: 2px 6px; white-space: nowrap; }
+
+  .ill { display: flex; gap: 8px; margin-top: 22px; }
+  .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; }
+  .pane .art { height: 104px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); position: relative; overflow: hidden; display: flex; flex-direction: column; }
+  .pane .pc { font-size: 12px; line-height: 1.4; text-align: center; margin-top: 6px; word-break: keep-all; }
+  .pane .pc b { color: var(--green); font-weight: 700; margin-right: 2px; }
+  .art .pg { flex: 1; padding: 10px 10px 0; }
+  .art .pg .bar { height: 6px; margin-top: 6px; } .art .pg .bar:first-child { margin-top: 0; }
+  .art .tb { height: 32px; background: var(--mock-bg); }
+  .art .addr { height: 32px; background: var(--mock-bg); display: flex; align-items: center; gap: 6px; padding: 0 6px; color: var(--sub); }
+  .art .addr .u { flex: 1; height: 16px; border-radius: 6px; background: var(--card); }
+  .art .addr svg.i { width: 15px; height: 15px; }
+  .art .addr .hl { padding: 2px; }
+  .art .list { flex: 1; padding: 8px 6px; display: flex; flex-direction: column; gap: 5px; background: var(--mock-bg); }
+  .art .list .gr { width: 22px; height: 3px; border-radius: 2px; background: var(--grab); margin: 0 auto 2px; }
+  .art .li { height: 20px; border-radius: 6px; background: var(--card); display: flex; align-items: center; padding: 0 6px; }
+  .art .li .bar { margin: 0; height: 5px; width: 60%; }
+  .art .li.on { box-shadow: 0 0 0 2px var(--primary); font-size: 10px; font-weight: 700; color: var(--green); gap: 3px; white-space: nowrap; overflow: hidden; }
+  .art .li.on svg.i { width: 12px; height: 12px; stroke-width: 2.2; }
+  .art .confirm { flex: 1; background: var(--mock-bg); padding: 8px 8px; display: flex; flex-direction: column; }
+  .art .confirm .hd { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--sub); }
+  .art .confirm .add { font-weight: 700; color: var(--on-primary); background: var(--primary); border-radius: 6px; padding: 2px 7px; }
+  .art .confirm .ic { display: flex; align-items: center; gap: 6px; margin-top: 12px; background: var(--card); border-radius: 8px; padding: 6px; font-size: 11px; font-weight: 700; }
+  .moa-ic { width: 22px; height: 22px; border-radius: 6px; background: var(--primary); color: var(--on-primary); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
+  .art.menu-art .addr { justify-content: flex-end; }
+  .art .menu-addr, .art.menu-art .addr { justify-content: flex-end; }
+  .msg { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px 24px 84px; }
+  .msg h2 { font-size: 20px; margin: 18px 0 0; letter-spacing: -0.3px; }
+  .msg p { margin: 8px 0 0; color: var(--sub); font-size: 14px; line-height: 1.55; word-break: keep-all; }
+  .msg p.small { font-size: 13px; }
+  .msg .acct { margin-top: 18px; background: var(--card); border-radius: 14px; padding: 10px 16px; font-size: 13px; color: var(--sub); overflow-wrap: anywhere; }
+  .msg .btn { width: auto; padding: 0 28px; margin-top: 22px; }
+  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--track); border-top-color: var(--primary); animation: spin .9s linear infinite; margin-top: 22px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .inapp .sub { font-size: 14px; color: var(--sub); margin: 8px 0 0; line-height: 1.55; word-break: keep-all; }
+  .orline { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--sub); margin: 26px 0 12px; }
+  .orline::before, .orline::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .inapp .hint { font-size: 13px; color: var(--sub); text-align: center; margin: 8px 0 0; line-height: 1.5; }
+
+  /* 작은 화면(보이는 높이 659px 이하): 높이를 아낀다 */
+  @media (max-height: 659px) {
+    .start { padding-top: 20px; }
+    .start .title { font-size: 20px; margin-top: 8px; }
+    .gsteps { margin-top: 16px; }
+    .gsteps .s { height: 44px; }
+    .start .btn { margin-top: 14px; }
+    .ill { margin-top: 16px; }
+    .pane .art { height: 92px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- 시작 (구매자·가족·이메일 없음) -->
+  <div id="sStart" hidden>
+    <div class="start">
+      <div class="logo">모아</div>
+      <div class="title" id="titleEmail" hidden><span class="em" id="emailTitle"></span> 계정으로<br>우리 가계부를 시작해요</div>
+      <div class="title" id="titleNone" hidden>구매할 때 적은 구글 계정으로<br>시작해요</div>
+      <div class="gsteps">
+        <div class="s now"><span class="n">1</span>구글 로그인·허용<span class="here">지금 여기</span></div>
+        <div class="s"><span class="n">2</span>홈 화면에 모아 놓기</div>
+        <div class="s"><span class="n">3</span><span id="third">우리 가계부 꾸미기</span></div>
+      </div>
+      <button class="btn" id="goBtn">시작하기</button>
+      <button class="link" id="helpBtn">열리지 않나요?</button>
+      <div class="next">
+        <div class="lb">다음에 이런 화면이 나와요</div>
+        <div class="gmock">
+          <div class="top"><span class="dot"></span>구글 계정</div>
+          <div class="app">모아</div>
+          <div class="acct" id="acctChip">구매한 계정</div>
+          <div class="bars"><div class="bar" style="width:92%"></div><div class="bar" style="width:76%"></div><div class="bar" style="width:46%"></div></div>
+          <div class="row"><span class="cancel">취소</span><span class="ok">허용</span><span class="tag">여기를 눌러요</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sheet-wrap" id="sheet" hidden>
+      <div class="scrim" id="closeScrim"></div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <h3>열리지 않나요?</h3>
+        <p class="why">이 폰 Safari에 구글 계정이 여러 개면 구글 쪽 문제로 열리지 않아요. 이렇게 열어 주세요</p>
+        <div class="hsteps">
+          <div class="hs"><span class="n">1</span><span class="t">주소를 복사해요</span>
+            <button class="btn soft" id="copyBtn1"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>주소 복사</button></div>
+          <div class="hs"><span class="n">2</span><span class="t">Safari 아래 <b>탭 버튼</b></span>
+            <span class="pic"><span class="tb"><svg class="i" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><svg class="i" viewBox="0 0 24 24"><path d="M12 3v11"/><path d="M8 7l4-4 4 4"/><path d="M8 10H6v10h12V10h-2"/></svg><svg class="i" viewBox="0 0 24 24"><path d="M4 5h6a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H4z"/><path d="M20 5h-6a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h6z"/></svg><span class="hl"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="8" width="12" height="12" rx="2"/><path d="M8 4h10a2 2 0 0 1 2 2v10"/></svg></span></span></span></div>
+          <div class="hs"><span class="n">3</span><span class="t"><b>개인정보 보호</b> 누르기</span>
+            <span class="pic"><span class="seg"><span class="on">개인정보 보호</span><span>탭</span></span></span></div>
+          <div class="hs"><span class="n">4</span><span class="t">주소창에 <b>붙여 넣기</b></span>
+            <span class="pic"><span class="urlbar"><span class="bubble">붙여넣기 및 이동</span></span></span></div>
+        </div>
+        <p class="after">그 창에서 홈 화면에 놓으면 다음부터는 잘 열려요</p>
+        <button class="btn ghost" id="closeBtn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 앱 안 · 자동으로 넘어가는 중 (카톡) -->
+  <div id="sEscape" hidden>
+    <div class="msg">
+      <div class="logo">모아</div>
+      <div class="spin"></div>
+      <h2>Safari로 넘어가는 중…</h2>
+      <p>잠깐만 기다려 주세요</p>
+      <a class="btn" id="escBtn" style="display:flex;align-items:center;justify-content:center;text-decoration:none">Safari로 열기</a>
+      <p class="small">안 넘어가면 눌러 주세요</p>
+    </div>
+  </div>
+
+  <!-- 앱 안 · 안내 한 장 (네이버·인스타 등) -->
+  <div id="sInapp" hidden>
+    <div class="start inapp">
+      <div class="logo">모아</div>
+      <div class="title">Safari에서 열어 주세요</div>
+      <p class="sub">이 앱 안에서는 구글 로그인이 안 돼요</p>
+      <div class="ill">
+        <div class="pane">
+          <div class="art menu-art"><div class="addr"><span class="u"></span><span class="hl"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></span></div><div class="pg"><div class="bar" style="width:88%"></div><div class="bar" style="width:70%"></div><div class="bar" style="width:80%"></div><div class="bar" style="width:60%"></div></div></div>
+          <div class="pc"><b>1</b>… 메뉴</div>
+        </div>
+        <div class="pane">
+          <div class="art"><div class="list"><div class="li"><div class="bar"></div></div><div class="li on"><svg class="i" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>Safari로 열기</div><div class="li"><div class="bar"></div></div><div class="li"><div class="bar"></div></div></div></div>
+          <div class="pc"><b>2</b>'Safari로 열기'</div>
+        </div>
+      </div>
+      <div class="orline">메뉴가 없나요?</div>
+      <button class="btn soft" id="copyBtn2"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>주소 복사</button>
+      <p class="hint">Safari를 열고 주소창에 붙여 넣어 주세요</p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="gate.js"></script>
+<script>
+  // 앱 주소 — 지금은 시험 배포 주소. 정식 출시 때 정식 /exec 주소로 바꾼다 (seller-checklist G-21)
+  var APP_URL = 'https://script.google.com/macros/s/AKfycbwh8lzbmcLErjvd1Fttk1cpmzqKNgAWvR8U4FV7yGdxG5XDQ-C0FK5BjX8IGk9WRGor/exec';
+
+  function $(id) { return document.getElementById(id); }
+  function show(id) { $(id).hidden = false; }
+
+  var toastTimer;
+  function toast(text) {
+    var t = $('toast'); t.textContent = text; t.classList.add('on');
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('on'); }, 1600);
+  }
+  function copyAddress() {
+    var text = location.href;
+    function done() { toast('주소를 복사했어요'); }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+      try { document.execCommand('copy'); done(); } catch (e) { toast('주소를 길게 눌러 복사해 주세요'); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+  }
+
+  var info = gateBrowser(navigator.userAgent);
+  if (info.inApp) {
+    var esc = gateEscapeUrl(info, location.href);
+    if (esc) {
+      $('escBtn').href = esc;
+      show('sEscape');
+      location.href = esc;          // 자동으로 벗어난다 (카톡 iOS에서 확인됨)
+    } else {
+      show('sInapp');
+      $('copyBtn2').addEventListener('click', copyAddress);
+    }
+  } else {
+    var h = gateParseHash(location.hash);
+    if (h.email) {
+      $('emailTitle').textContent = h.email;
+      $('acctChip').textContent = h.email;
+      $('titleEmail').hidden = false;
+    } else {
+      $('titleNone').hidden = false;
+    }
+    if (h.role === 'family') $('third').textContent = '가족 가계부에 연결하기';
+    $('goBtn').addEventListener('click', function () { location.href = gateChooserUrl(APP_URL, h.email); });
+    $('helpBtn').addEventListener('click', function () { $('sheet').hidden = false; });
+    $('closeBtn').addEventListener('click', function () { $('sheet').hidden = true; });
+    $('closeScrim').addEventListener('click', function () { $('sheet').hidden = true; });
+    $('copyBtn1').addEventListener('click', copyAddress);
+    show('sStart');
+  }
+</script>
+</body>
+</html>
