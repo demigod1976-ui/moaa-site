@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '3f69f6b-202611260951';
+C2.VERSION = 'eeb86d9-202611261017';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -1359,6 +1359,9 @@ var Rest = {
 // 가계부 읽기 (REST). src/Store.js loadBook_ 을 옮긴 것 — 해석·바로잡기 코드는 줄 단위로 같게 둔다.
 // 나중에 src/ 원본이 없어지면 이 파일이 원본이다.
 // 차이: 잠금 없음 · 가계부 주인 판정은 인자(isOwner) · 보는 탭 다시 쓰기(syncViewTabs_)는 하지 않는다 (관문 2에서 수식화)
+// 체크박스(내역 G열 취소)는 기록이 있는 줄에만 둔다 (#109): 빈 줄에 FALSE 가 걸려 있으면 appendCells 가 그 줄을 "데이터 있는 줄"로 보고
+// 시트 맨 끝에 붙인다 (실기 확인 2026-11-26, 1032행). 그래서 loadBook 이 빈 줄의 G 체크박스를 정리하고, 새 기록은 값과 G 체크박스를 한 번에 넣는다.
+// TODO(관문 3): 새 가계부 만들기(SheetSetup)가 G열 체크박스를 시트 끝까지 거는 것도 기록 줄에만 걸도록 바꾼다 — 이 작업(6b) 밖.
 // 순수 해석 함수(parseCategoryRow 등)와 TABS 는 브라우저에서 이미 전역이다 (src/ui/Pure.html).
 var BookStore = {
   // Store.js 에서 옮긴 도우미 (Store.js 는 브라우저 묶음에 없다). 전역과 겹치지 않게 BookStore 안에 둔다
@@ -1507,8 +1510,31 @@ var BookStore = {
     if (fixes.length) {
       await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchUpdate', { valueInputOption: 'RAW', data: fixes });
     }
+    await BookStore.trimCheckboxes(rest, bookId, vals(res, 0));
     var book = { info: info, categories: categories, payMethods: payMethods, txns: txns, budgets: budgets, rules: rules, ruleLog: ruleLog, installs: installs };
     return { book: book, problems: problems };
+  },
+
+  /**
+   * 빈 줄(A:K 가 모두 비었거나 G 의 FALSE 뿐)의 G열 체크박스(값·입력 검사)를 지운다. txnRows = loadBook 이 읽은 내역 A2:K 줄 배열.
+   * 이어진 줄마다 updateCells 하나, 전부 :batchUpdate 한 번. 정리할 것이 없으면 요청 0번(시트 속성도 읽지 않는다).
+   * 실패해도 던지지 않는다 — 읽기는 그대로 돌려주고 다음에 열 때 다시 정리한다.
+   */
+  trimCheckboxes: async function (rest, bookId, txnRows) {
+    try {
+      var spans = []; // [시작 줄 인덱스(0부터, 시트 기준), 끝 줄 인덱스(포함 안 함)]
+      (txnRows || []).forEach(function (row, i) {
+        if (!BookStore.blankRow(row) || (row || [])[6] !== false) return;
+        var idx = i + 1; // 내역 A2 부터 읽었으므로 시트 줄 인덱스는 i+1
+        var last = spans[spans.length - 1];
+        if (last && last[1] === idx) last[1] = idx + 1; else spans.push([idx, idx + 1]);
+      });
+      if (!spans.length) return;
+      var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+      await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: spans.map(function (sp) {
+        return { updateCells: { range: { sheetId: sheetId, startRowIndex: sp[0], endRowIndex: sp[1], startColumnIndex: 6, endColumnIndex: 7 }, fields: 'userEnteredValue,dataValidation' } };
+      }) });
+    } catch (e) { /* 정리는 덤이다. 다음에 다시 */ }
   },
 
   /**
@@ -1616,13 +1642,16 @@ var BookStore = {
     var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
     await rest.json('POST', base + ':batchUpdate', { requests: [{ appendCells: {
       sheetId: sheetId,
-      rows: [{ values: txnToRow(txn).concat([txn.id]).map(BookStore.cellOf) }],
-      fields: 'userEnteredValue',
+      // G 칸(취소 체크박스)은 값과 입력 검사를 함께 넣는다 — 기록 있는 줄에만 체크박스가 있다 (#109)
+      rows: [{ values: txnToRow(txn).concat([txn.id]).map(BookStore.cellOf).map(function (c, j) {
+        return j === 6 ? { userEnteredValue: { boolValue: txn.canceled }, dataValidation: { condition: { type: 'BOOLEAN' } } } : c;
+      }) }],
+      fields: 'userEnteredValue,dataValidation',
     } }] }, { retry: false });
     return { txns: [txn], install: null };
   },
 
-  /** 거래 지우기: 줄을 없애지 않고 A:K 를 비운다. 지운 거래를 돌려준다 */
+  /** 거래 지우기: 줄을 없애지 않고 A:K 의 값과 G열 체크박스를 비운다. 지운 거래를 돌려준다 */
   deleteTxns: async function (rest, bookId, ids) {
     var book = (await BookStore.loadBook(rest, bookId, {})).book;
     var seen = {};
@@ -1642,9 +1671,11 @@ var BookStore = {
       if (!(id in rows)) throw new Error(BookStore.notFoundMessage);
       if (lines.indexOf(rows[id]) < 0) lines.push(rows[id]);
     });
-    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchClear', {
-      ranges: lines.map(function (r) { return BookStore.q(TABS.txns, 'A' + r + ':K' + r); }),
-    });
+    // values:batchClear 는 G열 입력 검사를 못 지운다 → updateCells 로 값과 검사를 함께 비운다. 같은 줄을 두 번 비워도 같으니 재시도 허용
+    var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: lines.map(function (r) {
+      return { updateCells: { range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 0, endColumnIndex: 11 }, fields: 'userEnteredValue,dataValidation' } };
+    }) });
     return { removed: removed, installs: [], renumbered: [] };
   }
 };
@@ -1896,6 +1927,10 @@ var Login = {
     }
 
     function showLogin(error) {
+      // 로그인 직후 막힘(#109): 구글 창이 닫힌 뒤 iOS 홈 화면 앱이 화면을 다시 그리지 않아 새로 고침으로 넘어온다 → 한 번 막힘 화면
+      var held = null;
+      try { held = JSON.parse(storage.getItem('moa_blocked_once')); } catch (e) { held = null; }
+      if (held) { storage.removeItem('moa_blocked_once'); showBlocked(held); return; }
       deps.render(box(
         '<div class="c2-logo">모아</div>' +
         '<h2>모아에 오신 것을 환영해요</h2>' +
@@ -1939,8 +1974,11 @@ var Login = {
       return Promise.resolve(p).then(function (code) {
         return keys.exchange(code);
       }).then(function (r) {
-        if (r && r.ok) { deps.boot(); return; }
-        if (r && r.why === 'blocked') { showBlocked(r.session); return; }
+        if (r && r.ok) { if (deps.reload) deps.reload(); else deps.boot(); return; }
+        if (r && r.why === 'blocked') {
+          if (deps.reload) { storage.setItem('moa_blocked_once', JSON.stringify(r.session || {})); deps.reload(); return; }
+          showBlocked(r.session); return;
+        }
         showLogin(Login.LOGIN_FAIL);
       }, function () { showLogin(Login.LOGIN_FAIL); });
     }
@@ -2108,7 +2146,9 @@ var Login = {
     gis.requestCode = function (o) { diag('login-click prompt=' + o.prompt); return realRequestCode(o).catch(function (e) { diag('code-error ' + (e && e.message)); throw e; }); };
     obj = Login.create({
       keys: keys, rest: rest, store: BookStore, storage: storage, gis: gis, pickFile: pickFile, postServer: postServer,
-      boot: function () { diag('boot'); var b = el(); if (b) b.hidden = true; win.App.boot(); setTimeout(function () { diag('after-boot 4s err=' + (win.App && win.App._error) + ' boot=' + !!(win.App && win.App.state && win.App.state.boot) + ' overlayHidden=' + (el() && el().hidden) + ' gsr=' + !!(win.google && win.google.script && win.google.script.run)); }, 4000); },
+      boot: function () { var b = el(); if (b) b.hidden = true; win.App.boot(); },
+      // 로그인 창(구글) 뒤에는 화면을 새로 고친다: iOS 홈 화면 앱이 팝업이 닫힌 뒤 화면을 다시 그리지 않는다(2026-11-26 실기). 열쇠는 이미 저장돼 있다
+      reload: function () { win.location.reload(); },
       render: render,
       today: function () { return todayKST(new Date()); }
     });
