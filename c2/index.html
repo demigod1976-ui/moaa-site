@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '95b1584-202611260945';
+C2.VERSION = '3f69f6b-202611260951';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -1331,6 +1331,8 @@ var Rest = {
         }
         if (status === 403) throw Rest.RestError('denied', 403);
         if (status === 404) throw Rest.RestError('notfound', 404);
+        // 임시 진단: 실패한 요청의 경로·상태·구글 오류 문장을 오류에 붙인다 (열쇠 값은 넣지 않는다)
+        Rest.lastFail = method + ' ' + String(url).split('?')[0].replace(/^https:\/\/[^/]+/, '') + ' st=' + status + ' net=' + !!o.netError + ' body=' + String(o.text || '').slice(0, 200);
         var transient = o.netError || status === 429 || status === 500 || status === 502 || status === 503;
         if (!transient) throw Rest.RestError('other', status);
         if (!retry || attempt >= Rest.BACKOFF.length) {
@@ -1796,7 +1798,7 @@ var Bridge = {
 
     function fail(handler, fn, e) {
       var message = e && e.message ? e.message : String(e);
-      try { log(fn, message); } catch (x) { /* 기록 실패는 무시 */ }
+      try { log(fn, e && e.why ? message + ' | why=' + e.why + ' st=' + e.status + ' | ' + (typeof Rest !== 'undefined' && Rest.lastFail || '') : message); /* 임시 진단 꼬리 */ } catch (x) { /* 기록 실패는 무시 */ }
       handler(e instanceof Error ? e : new Error(message));
     }
 
