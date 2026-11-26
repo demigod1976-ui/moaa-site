@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '2ae931f-202611260922';
+C2.VERSION = '37bae53-202611260933';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -2076,9 +2076,29 @@ var Login = {
       return win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json(); });
     }
+    // ── 임시 진단 (관문 1 첫 연결, 원인 확정 뒤 지운다): 단계마다 서버 실행 기록에 한 줄 ──
+    var diagT0 = Date.now();
+    function diag(step) {
+      try {
+        var nav = (win.performance && win.performance.getEntriesByType) ? (win.performance.getEntriesByType('navigation')[0] || {}).type : '?';
+        var msg = step + ' | +' + (Date.now() - diagT0) + 'ms | nav=' + nav + ' | rt=' + (storage.getItem('moa_rt') ? 'y' : 'n') +
+          ' | sess=' + (storage.getItem('moa_sess') ? 'y' : 'n') + ' | standalone=' + (win.navigator.standalone === true);
+        win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ op: 'log', where: 'diag', message: msg }) }).catch(function () {});
+      } catch (e) { /* 진단 실패는 무시 */ }
+    }
+    diag('page-load');
+    var realExchange = keys.exchange;
+    keys = Object.assign({}, keys, {
+      exchange: function (code) {
+        diag('code-received');
+        return realExchange(code).then(function (r) { diag('exchange ok=' + (r && r.ok) + ' why=' + (r && r.why)); return r; });
+      }
+    });
+    var realRequestCode = gis.requestCode;
+    gis.requestCode = function (o) { diag('login-click prompt=' + o.prompt); return realRequestCode(o).catch(function (e) { diag('code-error ' + (e && e.message)); throw e; }); };
     obj = Login.create({
       keys: keys, rest: rest, store: BookStore, storage: storage, gis: gis, pickFile: pickFile, postServer: postServer,
-      boot: function () { var b = el(); if (b) b.hidden = true; win.App.boot(); },
+      boot: function () { diag('boot'); var b = el(); if (b) b.hidden = true; win.App.boot(); },
       render: render,
       today: function () { return todayKST(new Date()); }
     });
