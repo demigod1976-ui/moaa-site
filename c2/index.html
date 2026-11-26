@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '37bae53-202611260933';
+C2.VERSION = '95b1584-202611260945';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -2087,6 +2087,14 @@ var Login = {
       } catch (e) { /* 진단 실패는 무시 */ }
     }
     diag('page-load');
+    if (win.addEventListener) win.addEventListener('error', function (ev) { diag('js-error ' + (ev && ev.message) + ' @' + (ev && ev.filename ? '' : '') + (ev && ev.lineno)); });
+    if (win.addEventListener) win.addEventListener('unhandledrejection', function (ev) { diag('unhandled ' + (ev && ev.reason && (ev.reason.message || ev.reason))); });
+    var realRender = render;
+    render = function (html) {
+      var h = (String(html).match(/<h2>([^<]*)<\/h2>/) || [])[1] || '?';
+      try { realRender(html); } catch (e) { diag('render-throw ' + h + ' ' + (e && e.message)); throw e; }
+      try { var a = doc.getElementById('app'); diag('render ' + h + ' hidden=' + (el() && el().hidden) + ' app=' + String((a && a.textContent) || '-').slice(0, 30)); } catch (e2) { /* 진단만 */ }
+    };
     var realExchange = keys.exchange;
     keys = Object.assign({}, keys, {
       exchange: function (code) {
@@ -2098,7 +2106,7 @@ var Login = {
     gis.requestCode = function (o) { diag('login-click prompt=' + o.prompt); return realRequestCode(o).catch(function (e) { diag('code-error ' + (e && e.message)); throw e; }); };
     obj = Login.create({
       keys: keys, rest: rest, store: BookStore, storage: storage, gis: gis, pickFile: pickFile, postServer: postServer,
-      boot: function () { diag('boot'); var b = el(); if (b) b.hidden = true; win.App.boot(); },
+      boot: function () { diag('boot'); var b = el(); if (b) b.hidden = true; win.App.boot(); setTimeout(function () { diag('after-boot 4s err=' + (win.App && win.App._error) + ' boot=' + !!(win.App && win.App.state && win.App.state.boot) + ' overlayHidden=' + (el() && el().hidden) + ' gsr=' + !!(win.google && win.google.script && win.google.script.run)); }, 4000); },
       render: render,
       today: function () { return todayKST(new Date()); }
     });
