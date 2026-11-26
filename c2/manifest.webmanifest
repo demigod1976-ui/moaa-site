@@ -1,0 +1,15 @@
+{
+  "name": "모아",
+  "short_name": "모아",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#3d6a4f",
+  "icons": [
+    {
+      "src": "../icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
