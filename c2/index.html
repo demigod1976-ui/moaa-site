@@ -1152,13 +1152,13 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'c0890b7-202611270923';
+C2.VERSION = 'd7279a2-202611270938';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
 var Keys = {
   FRESH_MS: 5 * 60 * 1000, // 끝나기까지 이보다 많이 남아야 fresh
-  NAMES: ['moa_rt', 'moa_at', 'moa_exp', 'moa_sess'],
+  NAMES: ['moa_rt', 'moa_at', 'moa_exp', 'moa_sess', 'moa_book'],
 
   create: function (deps) {
     var fetchFn = deps.fetch, storage = deps.storage, now = deps.now, serverUrl = deps.serverUrl;
@@ -1650,9 +1650,9 @@ var BookStore = {
       var rows = await BookStore.txnRowsById(rest, bookId);
       if (!(updated.id in rows)) throw new Error(BookStore.notFoundMessage);
       var r = rows[updated.id];
+      // A:K 한 번에, J(앱 번호)에 같은 id를 다시 쓴다 — 다른 기기가 그 줄을 막 지웠어도 번호 없는 줄이 생기지 않는다 (I2)
       await rest.json('POST', base + '/values:batchUpdate', { valueInputOption: 'RAW', data: [
-        { range: BookStore.q(TABS.txns, 'A' + r + ':I' + r), values: [txnToRow(updated)] },
-        { range: BookStore.q(TABS.txns, 'K' + r), values: [['']] },
+        { range: BookStore.q(TABS.txns, 'A' + r + ':K' + r), values: [txnToRow(updated).concat([updated.id, ''])] },
       ] });
       return { txns: [updated], install: null };
     }
@@ -1800,19 +1800,29 @@ var Bridge = {
       return pick;
     }
 
-    var fns = {
-      api_bootstrap: async function () {
-        var t0 = now();
-        var s = await gate();
-        var t1 = now();
-        var today = todayKST(new Date());
-        var loaded = await store.loadBook(rest, s.bookId, {});
-        var t2 = now();
-        var book = loaded.book;
-        showTimes({ open: t2 - startAt, refresh: t1 - t0, sheet: t2 - t1 });
-        return {
+    // 마지막으로 읽은 가계부를 기기에 둔다 (저장 실패는 무시)
+    function saveBook(s, loaded) {
+      if (!loaded || !loaded.book) return;
+      write('moa_book', { v: 1, bookId: s.bookId, email: s.email, book: loaded.book, problems: loaded.problems || [], savedAt: Date.now() });
+    }
+
+    // 빠른 길 조건: 열쇠(rt)·세션(bookId)·저장본(v:1, 같은 bookId·email)
+    function fastState() {
+      try {
+        if (!storage.getItem('moa_rt')) return null;
+        var s = read('moa_sess', null);
+        if (!s || !s.bookId) return null;
+        var b = read('moa_book', null);
+        if (!b || b.v !== 1 || !b.book || b.bookId !== s.bookId || b.email !== s.email) return null;
+        return { s: s, b: b };
+      } catch (e) { return null; }
+    }
+
+    function ready(s, book, problems) {
+      var today = todayKST(new Date());
+      return {
           state: 'READY', email: s.email, role: s.role, today: today,
-          book: book, problems: loaded.problems,
+          book: book, problems: problems,
           lastPick: readLastPick(book),
           needSetup: !hasBudgetIn(book, Number(today.slice(0, 4)), Number(today.slice(5, 7))),
           sheetUrl: 'https://docs.google.com/spreadsheets/d/' + s.bookId,
@@ -1821,11 +1831,36 @@ var Bridge = {
           onboard: null,
           bookName: book.info.name || Bridge.DEFAULT_BOOK_NAME,
           homeHint: Bridge.normalizeHomeHint(read('moa_homehint', {}))
-        };
+      };
+    }
+
+    var fns = {
+      api_bootstrap: async function () {
+        var fast = fastState();
+        if (fast) {
+          var out = ready(fast.s, fast.b.book, fast.b.problems || []);
+          showTimes({ open: now() - startAt });
+          // 첫 그림 뒤에 뒤에서 새로 읽는다 (화면의 _reload 가 경합을 막는다)
+          var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+          later(function () {
+            try { if (win.App && typeof win.App._reload === 'function') win.App._reload(); } catch (e) { /* 무시 */ }
+          }, 0);
+          return out;
+        }
+        var t0 = now();
+        var s = await gate();
+        var t1 = now();
+        var loaded = await store.loadBook(rest, s.bookId, {});
+        var t2 = now();
+        saveBook(s, loaded);
+        showTimes({ open: t2 - startAt, refresh: t1 - t0, sheet: t2 - t1 });
+        return ready(s, loaded.book, loaded.problems);
       },
       api_load: async function () {
         var s = await gate();
-        return store.loadBook(rest, s.bookId, {});
+        var loaded = await store.loadBook(rest, s.bookId, {});
+        saveBook(s, loaded);
+        return loaded;
       },
       api_saveTxn: async function (input) {
         var s = await gate();
