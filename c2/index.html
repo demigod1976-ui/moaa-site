@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '78bef8e-202611271255';
+C2.VERSION = '50e890d-202611271344';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -2268,6 +2268,7 @@ var BookStore = {
     var txns = [];
     var seen = {};
     var dupLines = [];
+    var idLines = []; // 이번에 번호를 받은 줄 (시트 줄 번호): 시트에서 직접 넣은 줄은 G 체크박스·A~E 입력 검사가 없어 함께 건다
     var autoFirst = {}; // 'A-' 번호 → 그 번호로 처음 읽은 줄의 A~I
     vals(res, 0).forEach(function (row, i) {
       var line = i + 2;
@@ -2295,6 +2296,7 @@ var BookStore = {
       if (id === '' || seen[id]) {
         id = uniqueId(seen);
         fix(T.txns, 'J' + line, id);
+        idLines.push(line);
       }
       seen[id] = true;
       if (id.indexOf('A-') === 0 && !(id in autoFirst)) autoFirst[id] = sig;
@@ -2358,7 +2360,7 @@ var BookStore = {
     if (fixes.length) {
       await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchUpdate', { valueInputOption: 'RAW', data: fixes });
     }
-    await BookStore.trimCheckboxes(rest, bookId, vals(res, 0), dupLines);
+    await BookStore.trimCheckboxes(rest, bookId, vals(res, 0), dupLines, idLines);
     // 순서 규칙은 여기 한 곳 (#111): C-2 는 새 기록을 시트 맨 아래에 붙이지만 화면·순수 함수는 "목록 앞 = 가장 최근 입력"을 전제한다
     // (원본은 새 줄을 2행에 끼워 넣었다). 번호 붙이기·겹친 번호·problems 줄 번호는 위에서 시트 순서로 이미 끝났으므로 마지막에 뒤집는다.
     // 이 목록의 인덱스는 시트 줄 번호가 아니다 — 쓰기는 앱 번호(J열)로 줄을 찾는다 (txnRowsById).
@@ -2380,7 +2382,7 @@ var BookStore = {
    * 이어진 줄마다 updateCells 하나, 전부 :batchUpdate 한 번. 정리할 것이 없으면 요청 0번(시트 속성도 읽지 않는다).
    * 실패해도 던지지 않는다 — 읽기는 그대로 돌려주고 다음에 열 때 다시 정리한다.
    */
-  trimCheckboxes: async function (rest, bookId, txnRows, dupLines) {
+  trimCheckboxes: async function (rest, bookId, txnRows, dupLines, idLines) {
     try {
       var spans = []; // [시작 줄 인덱스(0부터, 시트 기준), 끝 줄 인덱스(포함 안 함)]
       (txnRows || []).forEach(function (row, i) {
@@ -2390,7 +2392,8 @@ var BookStore = {
         if (last && last[1] === idx) last[1] = idx + 1; else spans.push([idx, idx + 1]);
       });
       dupLines = dupLines || [];
-      if (!spans.length && !dupLines.length) return;
+      idLines = idLines || [];
+      if (!spans.length && !dupLines.length && !idLines.length) return;
       var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
       var reqs = spans.map(function (sp) {
         return { updateCells: { range: { sheetId: sheetId, startRowIndex: sp[0], endRowIndex: sp[1], startColumnIndex: 6, endColumnIndex: 7 }, fields: 'userEnteredValue,dataValidation' } };
@@ -2400,6 +2403,8 @@ var BookStore = {
         reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 0, endColumnIndex: 11 }, fields: 'userEnteredValue' } });
         reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 6, endColumnIndex: 7 }, fields: 'dataValidation' } });
       });
+      // 번호를 새로 받은 줄(시트에서 직접 넣은 줄): 값은 건드리지 않고 A~G 입력 검사(G 는 체크박스)만 건다
+      idLines.forEach(function (line) { reqs.push(BookStore.txnValidationRequest(sheetId, line)); });
       await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
     } catch (e) { /* 정리는 덤이다. 다음에 다시 */ }
   },
@@ -2518,6 +2523,37 @@ var BookStore = {
     }
   },
 
+  // 기록 줄 하나(A:K)의 칸들: 값 + 칸마다 입력 검사(A~E·G, H~K 는 없음), G 는 체크박스 값. 앱이 기록 줄을 쓰는 모든 곳이 이것을 쓴다
+  txnRowCells: function (t) {
+    return txnToRow(t).concat([t.id]).map(BookStore.cellOf).map(function (c, j) {
+      var rule = BookStore.txnValidation(j);
+      if (j === 6) c = { userEnteredValue: { boolValue: t.canceled === true } };
+      return rule ? Object.assign({}, c, { dataValidation: rule }) : c;
+    });
+  },
+
+  // 이미 있는 기록 줄(시트 줄 번호 line)을 거래 t 로 다시 쓰는 updateCells (A:K, J=번호, K 빈칸). 새 줄과 같은 값·입력 검사
+  txnRowRequest: function (sheetId, line, t) {
+    var cells = BookStore.txnRowCells(t);
+    cells[10] = {}; // K(확인 칸)는 비운다
+    return { updateCells: {
+      range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 0, endColumnIndex: 11 },
+      rows: [{ values: cells }],
+      fields: 'userEnteredValue,dataValidation',
+    } };
+  },
+
+  // 값은 그대로 두고 기록 줄의 A~G 입력 검사(G 는 체크박스)만 거는 updateCells (시트에서 직접 넣은 줄)
+  txnValidationRequest: function (sheetId, line) {
+    var cells = [];
+    for (var j = 0; j < 7; j++) cells.push({ dataValidation: BookStore.txnValidation(j) });
+    return { updateCells: {
+      range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 0, endColumnIndex: 7 },
+      rows: [{ values: cells }],
+      fields: 'dataValidation',
+    } };
+  },
+
   // 값 하나를 appendCells 칸으로: 숫자·글자·참거짓, 빈 값은 빈 칸
   cellOf: function (v) {
     if (v === '' || v == null) return {};
@@ -2568,10 +2604,10 @@ var BookStore = {
       var rows = await BookStore.txnRowsById(rest, bookId);
       if (!(updated.id in rows)) throw new Error(BookStore.notFoundMessage);
       var r = rows[updated.id];
-      // A:K 한 번에, J(앱 번호)에 같은 id를 다시 쓴다 — 다른 기기가 그 줄을 막 지웠어도 번호 없는 줄이 생기지 않는다 (I2)
-      await rest.json('POST', base + '/values:batchUpdate', { valueInputOption: 'RAW', data: [
-        { range: BookStore.q(TABS.txns, 'A' + r + ':K' + r), values: [txnToRow(updated).concat([updated.id, ''])] },
-      ] });
+      // A:K 한 번에, J(앱 번호)에 같은 id를 다시 쓴다 — 다른 기기가 그 줄을 막 지웠어도 번호 없는 줄이 생기지 않는다 (I2).
+      // 새 줄과 같이 칸마다 입력 검사·G 체크박스도 함께 건다 (시트에서 직접 넣은 줄은 그것이 없다)
+      var editSheet = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+      await rest.json('POST', base + ':batchUpdate', { requests: [BookStore.txnRowRequest(editSheet, r, updated)] });
       return { txns: [updated], install: null };
     }
     var txn = { id: input.id || newId(), date: v.date, type: v.type, category: v.category, payMethod: v.payMethod,
@@ -2585,13 +2621,7 @@ var BookStore = {
   appendTxnsRequest: function (sheetId, txns) {
     return { appendCells: {
       sheetId: sheetId,
-      rows: txns.map(function (t) {
-        return { values: txnToRow(t).concat([t.id]).map(BookStore.cellOf).map(function (c, j) {
-          var rule = BookStore.txnValidation(j);
-          if (j === 6) c = { userEnteredValue: { boolValue: t.canceled === true } };
-          return rule ? Object.assign({}, c, { dataValidation: rule }) : c;
-        }) };
-      }),
+      rows: txns.map(function (t) { return { values: BookStore.txnRowCells(t) }; }),
       fields: 'userEnteredValue,dataValidation',
     } };
   },
@@ -2672,11 +2702,7 @@ var BookStore = {
     renumbered.forEach(function (t) {
       var r = rowOf[t.id];
       if (!r) return; // 줄을 못 찾음 = 그사이 다른 기기가 지운 거래. 되살리지 않는다
-      reqs.push({ updateCells: {
-        range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 0, endColumnIndex: 11 },
-        rows: [{ values: txnToRow(t).concat([t.id, '']).map(BookStore.cellOf) }],
-        fields: 'userEnteredValue',
-      } });
+      reqs.push(BookStore.txnRowRequest(sheetId, r, t));
     });
     return reqs;
   },
@@ -2832,7 +2858,7 @@ var BookStore = {
     if (txns.length) {
       var txnSheet = await BookStore.sheetIdOf(rest, bookId, T.txns);
       txns.forEach(function (t) { // 수정·다시 센 줄과 같은 모양: J 에 같은 번호, K 빈칸
-        reqs.push(BookStore.rowsRequest(txnSheet, txnLines[t.id], 0, 11, [txnToRow(t).concat([t.id, '']).map(cell)]));
+        reqs.push(BookStore.txnRowRequest(txnSheet, txnLines[t.id], t));
       });
     }
     if (rules.length || ch.categories || ch.payMethods) var setSheet = await BookStore.sheetIdOf(rest, bookId, T.settings);
@@ -3162,6 +3188,7 @@ var Bridge = {
       return win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json(); });
     };
+    var sleep = deps.sleep || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
     var reloadPage = deps.onReload || function () { try { win.location.reload(); } catch (e) { /* 무시 */ } };
     var token = null; // 마지막으로 받은 접근 열쇠
     var startAt = now();
@@ -3256,6 +3283,29 @@ var Bridge = {
       var rec = read('moa_book', null);
       var problems = rec && rec.bookId === s.bookId && Array.isArray(rec.problems) ? rec.problems : [];
       write('moa_book', { v: Bridge.BOOK_FORMAT, bookId: s.bookId, email: s.email, book: book, problems: problems, savedAt: Date.now() });
+    }
+
+    // #115: 고른 카테고리·결제 수단이 최신 목록에 없어서 실패했다면(= 다른 기기가 목록을 바꿨다) 열린 화면의 목록을 최신으로 바꾸고 더 알기 쉬운 문구를 던진다.
+    // 빈 값(그냥 안 고른 경우)이면 아무것도 하지 않고 원래 오류를 그대로 둔다. 입력 중인 금액·메모는 화면의 pending 상태(p.f)에 있어 render 가 지우지 않는다
+    async function staleListNotice(s, input, e) {
+      var msg = e && e.message;
+      var isCat = msg === '카테고리를 골라 주세요', isPay = msg === '결제 수단을 골라 주세요';
+      if (!isCat && !isPay) return;
+      input = input || {};
+      var chosen = String(input[isCat ? 'category' : 'payMethod'] == null ? '' : input[isCat ? 'category' : 'payMethod']);
+      if (!chosen) return;
+      var loaded;
+      try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (x) { return; }
+      if (!loaded || !loaded.book) return;
+      var b = loaded.book;
+      var still = isCat ? b.categories.some(function (c) { return c.name === chosen && c.type === String(input.type); })
+        : b.payMethods.some(function (p) { return p.name === chosen; });
+      if (still) return;
+      storeBook(s, b);
+      try {
+        if (win.App && win.App.state) { win.App.state.book = b; if (typeof win.App.render === 'function') win.App.render(); }
+      } catch (x) { /* 무시 */ }
+      throw new Error(msg + ' · 다른 기기에서 목록이 바뀌어 최신 목록을 불러왔어요'); // 앞부분이 Record.html RECORD_INPUT_ERRORS 와 맞아 이유가 그대로 보인다
     }
 
     // 부른 기기의 마지막 고른 값(moa_lastpick)의 이름을 바꾼다 (src renameLastPick_ 과 같은 규칙)
@@ -3379,7 +3429,15 @@ var Bridge = {
     async function connectBook(fileId) {
       var s = await gate();
       if (fileId !== s.bookId) throw new Error('구매자의 가계부 파일을 선택해 주세요');
-      await store.loadBook(rest, fileId, {}); // 접근 확인 (실패하면 예외)
+      // 접근 확인. 피커로 고른 직후엔 권한이 퍼지는 데 몇 초 걸려 notfound/denied 가 날 수 있어 몇 번 더 읽는다
+      var delays = [1500, 3000, 4500];
+      for (var attempt = 0; ; attempt++) {
+        try { await store.loadBook(rest, fileId, {}); break; } catch (e) {
+          var retry = !!e && e.name === 'RestError' && (e.why === 'notfound' || e.why === 'denied');
+          if (!retry || attempt >= delays.length) throw e;
+          await sleep(delays[attempt]);
+        }
+      }
       try {
         var r = await postServer({ op: 'markConnected', accessToken: token, bookId: fileId });
         if (r && r.ok === true && r.first === true && read('moa_onboard', null) == null) write('moa_onboard', 'name');
@@ -3472,7 +3530,13 @@ var Bridge = {
       api_saveTxn: async function (input) {
         var s = await gate();
         var t0 = now();
-        var result = await store.saveTxn(rest, s.bookId, input, { today: todayKST(new Date()) });
+        var result;
+        try {
+          result = await store.saveTxn(rest, s.bookId, input, { today: todayKST(new Date()) });
+        } catch (e) {
+          await staleListNotice(s, input, e); // 다른 기기가 목록을 바꿨으면 안내하고 최신 목록으로 (#115)
+          throw e;
+        }
         showTimes({ save: now() - t0 });
         patchBook(s, { saved: result.txns || [], install: result.install || null });
         if (input.edit !== true && result.txns && result.txns[0]) { // 마지막에 쓴 값은 새 기록만 바꾼다
