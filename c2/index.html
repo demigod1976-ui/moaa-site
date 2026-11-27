@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'c3c983a-202611271046';
+C2.VERSION = '967c8fe-202611271104';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -1689,15 +1689,16 @@ var BookStore = {
     });
 
     var installs = [];
-    vals(res, 7).forEach(function (row) {
-      if (blankRow(row)) return;
-      installs.push({ id: str_(cell_(row, 0)), title: str_(cell_(row, 1)), months: toInt_(cell_(row, 2)) || 0, txnIds: splitList(cell_(row, 3)) });
-    });
+    installs = BookStore.parseInstallRows(vals(res, 7));
 
     if (fixes.length) {
       await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchUpdate', { valueInputOption: 'RAW', data: fixes });
     }
     await BookStore.trimCheckboxes(rest, bookId, vals(res, 0));
+    // 순서 규칙은 여기 한 곳 (#111): C-2 는 새 기록을 시트 맨 아래에 붙이지만 화면·순수 함수는 "목록 앞 = 가장 최근 입력"을 전제한다
+    // (원본은 새 줄을 2행에 끼워 넣었다). 번호 붙이기·겹친 번호·problems 줄 번호는 위에서 시트 순서로 이미 끝났으므로 마지막에 뒤집는다.
+    // 이 목록의 인덱스는 시트 줄 번호가 아니다 — 쓰기는 앱 번호(J열)로 줄을 찾는다 (txnRowsById).
+    txns.reverse();
     var book = { info: info, categories: categories, payMethods: payMethods, txns: txns, budgets: budgets, rules: rules, ruleLog: ruleLog, installs: installs };
     return { book: book, problems: problems };
   },
@@ -1734,9 +1735,44 @@ var BookStore = {
     return res.id;
   },
 
-  // ── 거래 쓰기 (관문 1: 일시불 새 기록 · 수정 · 지우기만) ──
+  /**
+   * 옛 줄 한 번 뒤집기 (#111, 전환 예행연습): 원본 앱은 새 줄을 2행에 끼워 넣어 시트가 "위 = 최근"이다. C-2 는 "아래 = 최근"(loadBook 이 읽을 때 뒤집는다)이라,
+   * 시험 사본을 만든 직후 한 번 기록 줄의 위아래를 바꾼다. 앱을 열 때 자동으로 돌지 않는다 (두 번 돌리면 도로 뒤집힌다) — 사본 흐름(Login)과 전환 절차만 부른다.
+   * 내역 A2:K 를 읽어 기록 줄(빈 줄 제외)을 거꾸로 위에서부터 채우고, 남는 줄은 비운다. 값과 G 체크박스·A~E 입력 검사가 줄과 함께 간다.
+   * 쓰기는 batchUpdate 한 번, 재시도 없음(끊긴 쓰기를 다시 보내 두 번 뒤집지 않게). 기록 줄이 없으면 쓰지 않는다.
+   */
+  flipTxnRows: async function (rest, bookId) {
+    var res = await rest.json('GET', Rest.SHEETS + encodeURIComponent(bookId) + '/values/' +
+      encodeURIComponent(BookStore.q(TABS.txns, 'A2:K')) + '?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER');
+    var raw = res.values || [];
+    var width = 11;
+    var padded = raw.map(function (r) { var o = (r || []).slice(0, width); while (o.length < width) o.push(''); return o; });
+    var records = padded.filter(function (r) { return !BookStore.blankRow(r); });
+    if (!records.length) return { flipped: 0 };
+    records.reverse();
+    var rows = padded.map(function (_, i) {
+      var rec = i < records.length ? records[i] : null;
+      var values = [];
+      for (var j = 0; j < width; j++) {
+        var c = rec ? BookStore.cellOf(rec[j]) : {};
+        var rule = BookStore.txnValidation(j);
+        if (j === 6) { // 체크박스는 기록 줄에만 (#109)
+          if (rec) c = { userEnteredValue: { boolValue: rec[6] === true }, dataValidation: rule };
+        } else if (rule) c = Object.assign({}, c, { dataValidation: rule });
+        values.push(c);
+      }
+      return { values: values };
+    });
+    var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: [{ updateCells: {
+      range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1 + rows.length, startColumnIndex: 0, endColumnIndex: width },
+      rows: rows, fields: 'userEnteredValue,dataValidation',
+    } }] }, { retry: false });
+    return { flipped: records.length };
+  },
+
+  // ── 거래 쓰기 (일시불·할부 새 기록 · 수정 · 지우기 · 되돌리기). 사용자 동작 하나 = :batchUpdate 한 번 ──
   notFoundMessage: '항목을 찾을 수 없습니다 (이미 삭제되었을 수 있습니다)',
-  installLaterMessage: '할부는 다음 단계에서 열려요',
 
   /** 화면 입력을 거래로 검증한다 (src/Api.js checkTxnInput_ 과 같은 규칙·문구). 카테고리는 같은 유형이어야 한다 */
   checkTxnInput: function (book, input) {
@@ -1828,11 +1864,24 @@ var BookStore = {
         .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
       return { txns: rounds, install: ins };
     }
-    if (!existing && Number(input.months) >= 2) throw new Error(BookStore.installLaterMessage);
     // 예산 없는 미래 달 손 기록은 막는다 (#70)
     var movesMonth = !existing || ymOf(existing.date) !== ymOf(v.date);
     if (movesMonth && futureMonthWithoutBudget(book, v.date, ctx.today)) throw new Error(NO_BUDGET_MONTH_TEXT);
     var base = Rest.SHEETS + encodeURIComponent(bookId);
+    if (!existing && Number(input.months) >= 2) {
+      if (v.pay.kind !== '카드') throw new Error('할부는 카드일 때만 고를 수 있어요');
+      if (v.type !== '지출') throw new Error('할부는 지출만 할 수 있어요');
+      var split = splitInstallment({ date: v.date, category: v.category, payMethod: v.payMethod, amount: v.amount, memo: v.memo, months: Number(input.months) },
+        BookStore.installIds(input.id, Number(input.months)));
+      // 쓰기 직전에 정보 I:L 을 다시 읽어 마지막 내용 줄 바로 아래에 묶음 줄을 붙인다. 회차 줄(내역)과 묶음 줄(정보)은 한 번의 batchUpdate 로 같이 들어간다
+      var lastLine = Math.max(1, BookStore.lastLineOf((await BookStore.readValues(rest, bookId, [BookStore.q(TABS.info, 'I:L')]))[0]));
+      var txSheet = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+      var infoSheet = await BookStore.sheetIdOf(rest, bookId, TABS.info);
+      var reqs = [BookStore.appendTxnsRequest(txSheet, split.txns)];
+      reqs.push(BookStore.infoRowsRequest(infoSheet, lastLine + 1, [BookStore.installToRow(split.install)]));
+      await rest.json('POST', base + ':batchUpdate', { requests: reqs }, { retry: false });
+      return { txns: split.txns, install: split.install };
+    }
     if (existing) {
       var updated = { id: existing.id, date: v.date, type: v.type, category: v.category, payMethod: v.payMethod,
         amount: v.amount, memo: v.memo, canceled: existing.canceled, inst: existing.inst, auto: existing.auto };
@@ -1848,20 +1897,97 @@ var BookStore = {
     var txn = { id: input.id || newId(), date: v.date, type: v.type, category: v.category, payMethod: v.payMethod,
       amount: v.amount, memo: v.memo, canceled: false, inst: '', auto: false };
     var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
-    await rest.json('POST', base + ':batchUpdate', { requests: [{ appendCells: {
-      sheetId: sheetId,
-      // 칸마다 내역 시트와 같은 입력 검사를 함께 넣는다. G 칸(취소 체크박스)은 값도 함께 — 기록 있는 줄에만 체크박스가 있다 (#109)
-      rows: [{ values: txnToRow(txn).concat([txn.id]).map(BookStore.cellOf).map(function (c, j) {
-        var rule = BookStore.txnValidation(j);
-        if (j === 6) c = { userEnteredValue: { boolValue: txn.canceled } };
-        return rule ? Object.assign({}, c, { dataValidation: rule }) : c;
-      }) }],
-      fields: 'userEnteredValue,dataValidation',
-    } }] }, { retry: false });
+    await rest.json('POST', base + ':batchUpdate', { requests: [BookStore.appendTxnsRequest(sheetId, [txn])] }, { retry: false });
     return { txns: [txn], install: null };
   },
 
-  /** 거래 지우기: 줄을 없애지 않고 A:K 의 값과 G열 체크박스를 비운다. 지운 거래를 돌려준다 */
+  // 거래들을 내역 맨 아래에 붙이는 appendCells 요청 하나. 칸마다 입력 검사, G 체크박스는 기록 줄에만 (#109). txns 순서가 곧 줄 순서
+  appendTxnsRequest: function (sheetId, txns) {
+    return { appendCells: {
+      sheetId: sheetId,
+      rows: txns.map(function (t) {
+        return { values: txnToRow(t).concat([t.id]).map(BookStore.cellOf).map(function (c, j) {
+          var rule = BookStore.txnValidation(j);
+          if (j === 6) c = { userEnteredValue: { boolValue: t.canceled === true } };
+          return rule ? Object.assign({}, c, { dataValidation: rule }) : c;
+        }) };
+      }),
+      fields: 'userEnteredValue,dataValidation',
+    } };
+  },
+
+  // 정보 I2:L 값 줄 → 묶음 목록 (loadBook 과 같은 규칙, 빈 줄은 건너뜀)
+  parseInstallRows: function (rows) {
+    var out = [];
+    (rows || []).forEach(function (row) {
+      if (BookStore.blankRow(row)) return;
+      out.push({ id: str_(cell_(row, 0)), title: str_(cell_(row, 1)), months: toInt_(cell_(row, 2)) || 0, txnIds: splitList(cell_(row, 3)) });
+    });
+    return out;
+  },
+
+  // 할부 회차 줄 번호 규칙 (src/Api.js installIds_ 와 같다): 1회차 = id, k회차 = id-k, 묶음 = 'I'+id. id 가 없으면 새 번호
+  installIds: function (id, months) {
+    var n = 0;
+    return function () {
+      if (!id) return newId();
+      n++;
+      return n === 1 ? id : n <= months ? id + '-' + n : 'I' + id;
+    };
+  },
+
+  installToRow: function (x) { return [x.id, x.title, x.months, x.txnIds.join(',')]; },
+
+  // values:batchGet 여러 범위 → 범위마다 values 배열
+  readValues: async function (rest, bookId, ranges) {
+    var query = ranges.map(function (r) { return 'ranges=' + encodeURIComponent(r); }).join('&') +
+      '&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER';
+    var res = await rest.json('GET', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchGet?' + query);
+    return ranges.map(function (_, i) { return BookStore.vals(res, i); });
+  },
+
+  // 값 줄 배열의 마지막 내용 줄 수 (빈 줄은 센 줄에 들지 않는다). 0 = 내용 없음
+  lastLineOf: function (rows) {
+    var n = (rows || []).length;
+    while (n > 0 && BookStore.blankRow(rows[n - 1])) n--;
+    return n;
+  },
+
+  // 정보 탭 I:L 의 startLine 줄부터 rows(묶음 줄 배열) 를 쓰는 updateCells 요청. 빈 칸은 비워진다
+  infoRowsRequest: function (infoSheetId, startLine, rows) {
+    return { updateCells: {
+      range: { sheetId: infoSheetId, startRowIndex: startLine - 1, endRowIndex: startLine - 1 + rows.length, startColumnIndex: 8, endColumnIndex: 12 },
+      rows: rows.map(function (r) { return { values: r.map(BookStore.cellOf) }; }),
+      fields: 'userEnteredValue',
+    } };
+  },
+
+  // 묶음 목록을 정보 I2:L 에 다시 쓰는 요청. 지금 내용 줄 수(usedLen)보다 짧으면 빈 줄로 채운다. 쓸 것이 없으면 null
+  installsRewriteRequest: function (infoSheetId, installs, usedLen) {
+    var rows = installs.map(BookStore.installToRow);
+    while (rows.length < usedLen) rows.push(['', '', '', '']);
+    return rows.length ? BookStore.infoRowsRequest(infoSheetId, 2, rows) : null;
+  },
+
+  // 다시 센 회차 줄의 A:K (수정과 같은 모양, J 에 번호를 다시 쓴다). rowOf = 앱 번호 → 줄 번호
+  renumberRequests: function (sheetId, renumbered, rowOf) {
+    var reqs = [];
+    renumbered.forEach(function (t) {
+      var r = rowOf[t.id];
+      if (!r) return; // 줄을 못 찾음 = 그사이 다른 기기가 지운 거래. 되살리지 않는다
+      reqs.push({ updateCells: {
+        range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 0, endColumnIndex: 11 },
+        rows: [{ values: txnToRow(t).concat([t.id, '']).map(BookStore.cellOf) }],
+        fields: 'userEnteredValue',
+      } });
+    });
+    return reqs;
+  },
+
+  /**
+   * 거래 지우기: 줄을 없애지 않고 A:K 의 값과 G열 체크박스를 비운다. 지운 거래와 (할부면) 지우기 전 묶음, 다시 센 회차를 돌려준다 (src api_deleteTxns 와 같다).
+   * 할부 회차를 지우면 묶음 목록을 다시 쓰고 남은 회차를 다시 센다 — 전부 batchUpdate 한 번.
+   */
   deleteTxns: async function (rest, bookId, ids) {
     var book = (await BookStore.loadBook(rest, bookId, {})).book;
     var seen = {};
@@ -1873,7 +1999,6 @@ var BookStore = {
       if (!found) throw new Error(BookStore.notFoundMessage);
       removed.push(found);
     });
-    if (removed.some(function (t) { return t.inst; })) throw new Error(BookStore.installLaterMessage);
     if (!ids.length) return { removed: [], installs: [], renumbered: [] };
     var rows = await BookStore.txnRowsById(rest, bookId);
     var lines = [];
@@ -1881,8 +2006,7 @@ var BookStore = {
       if (!(id in rows)) throw new Error(BookStore.notFoundMessage);
       if (lines.indexOf(rows[id]) < 0) lines.push(rows[id]);
     });
-    // values:batchClear 는 G열 입력 검사를 못 지운다 → updateCells 로 A:K 값만 비우고(A~E 검사는 살린다), G열 체크박스 검사는 따로 지운다.
-    // 같은 줄을 두 번 비워도 같으니 재시도 허용
+    // values:batchClear 는 G열 입력 검사를 못 지운다 → updateCells 로 A:K 값만 비우고(A~E 검사는 살린다), G열 체크박스 검사는 따로 지운다
     var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
     var reqs = [];
     lines.forEach(function (r) {
@@ -1891,8 +2015,75 @@ var BookStore = {
     lines.forEach(function (r) {
       reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 6, endColumnIndex: 7 }, fields: 'dataValidation' } });
     });
+    // 묶음은 쓰기 직전에 새로 읽은 정보 I2:L 로 만든다 (그사이 다른 기기가 넣거나 지운 묶음 줄을 덮지 않게)
+    var infoRaw = (await BookStore.readValues(rest, bookId, [BookStore.q(TABS.info, 'I2:L')]))[0];
+    var fresh = BookStore.parseInstallRows(infoRaw);
+    var affected = fresh.filter(function (x) {
+      return x.txnIds.some(function (id) { return ids.indexOf(id) >= 0; });
+    }).map(function (x) { return { id: x.id, title: x.title, months: x.months, txnIds: x.txnIds.slice() }; });
+    var renumbered = [];
+    if (affected.length) {
+      var rest2 = dropFromInstalls(fresh, ids);
+      var affectedIds = affected.map(function (x) { return x.id; });
+      var left = book.txns.filter(function (t) { return ids.indexOf(t.id) < 0; });
+      renumbered = renumberInstalls(left, rest2.filter(function (x) { return affectedIds.indexOf(x.id) >= 0; }));
+      var infoSheet = await BookStore.sheetIdOf(rest, bookId, TABS.info);
+      var rw = BookStore.installsRewriteRequest(infoSheet, rest2, BookStore.lastLineOf(infoRaw));
+      if (rw) reqs.push(rw);
+      BookStore.renumberRequests(sheetId, renumbered, rows).forEach(function (q) { reqs.push(q); });
+    }
     await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
-    return { removed: removed, installs: [], renumbered: [] };
+    return { removed: removed, installs: affected, renumbered: renumbered };
+  },
+
+  /**
+   * 되돌리기 (src api_restoreTxns 와 같은 규칙): 없는 번호만 같은 번호로 맨 아래에 다시 넣고(날짜 오름차순), 묶음은 같은 번호로 바꿔 끼우고, 회차를 다시 센다.
+   * 여러 번 불러도 같다. batchUpdate 한 번, 재시도 없음 (끊긴 쓰기를 다시 보내 같은 줄이 두 번 붙지 않게).
+   */
+  restoreTxns: async function (rest, bookId, txns, installs) {
+    var book = (await BookStore.loadBook(rest, bookId, {})).book;
+    var have = {};
+    book.txns.forEach(function (t) { have[t.id] = true; });
+    var fresh = [];
+    (txns || []).forEach(function (t) { if (!have[t.id]) { have[t.id] = true; fresh.push(t); } });
+    fresh = fresh.map(function (t, i) { return { t: t, i: i }; })
+      .sort(function (a, b) { return a.t.date < b.t.date ? -1 : a.t.date > b.t.date ? 1 : a.i - b.i; })
+      .map(function (x) { return x.t; });
+    // 묶음은 쓰기 직전에 새로 읽은 정보 I2:L 에서 바꿔 끼운다 (다른 기기가 그사이 바꾼 묶음 줄을 덮지 않게)
+    var infoRaw = (await BookStore.readValues(rest, bookId, [BookStore.q(TABS.info, 'I2:L')]))[0];
+    var list = BookStore.parseInstallRows(infoRaw);
+    var touched = false;
+    (installs || []).forEach(function (x) {
+      var kept = { id: x.id, title: x.title, months: x.months, txnIds: x.txnIds.filter(function (id) { return have[id]; }) };
+      var at = -1;
+      list.forEach(function (y, i) { if (y.id === x.id) at = i; });
+      if (!kept.txnIds.length) return;
+      if (at >= 0) list[at] = kept; else list.push(kept);
+      touched = true;
+    });
+    var restoredIds = (installs || []).map(function (x) { return x.id; });
+    var renumbered = renumberInstalls(book.txns.concat(fresh), list.filter(function (x) { return restoredIds.indexOf(x.id) >= 0; }));
+    var fix = {};
+    renumbered.forEach(function (t) { fix[t.id] = t; });
+    var freshIds = {};
+    fresh = fresh.map(function (t) { freshIds[t.id] = true; return fix[t.id] || t; }); // 새 줄은 다시 센 모습으로 바로 들어간다
+    var existingFix = renumbered.filter(function (t) { return !freshIds[t.id]; });
+    var reqs = [];
+    var sheetId = null;
+    if (fresh.length || existingFix.length) sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+    if (fresh.length) reqs.push(BookStore.appendTxnsRequest(sheetId, fresh));
+    if (touched) {
+      var infoSheet = await BookStore.sheetIdOf(rest, bookId, TABS.info);
+      var rw = BookStore.installsRewriteRequest(infoSheet, list, BookStore.lastLineOf(infoRaw));
+      if (rw) reqs.push(rw);
+    }
+    if (existingFix.length) {
+      var rows = await BookStore.txnRowsById(rest, bookId);
+      BookStore.renumberRequests(sheetId, existingFix, rows).forEach(function (q) { reqs.push(q); });
+    }
+    if (!reqs.length) return true;
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs }, { retry: false });
+    return true;
   },
 
   /**
@@ -1953,8 +2144,65 @@ var Bridge = {
   PREF_TONES: ['forest', 'sand', 'sea', 'lavender'],
   PREF_MODES: ['auto', 'light', 'dark'],
   OFFLINE: '연결이 불안정해요. 잠시 뒤 다시 시도해 주세요',
-  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_setHomeHint', 'api_connectBook', 'api_setOnboard', 'api_savePrefs'],
+  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_restoreTxns', 'api_setHomeHint', 'api_connectBook', 'api_setOnboard', 'api_savePrefs'],
   TIMES_KEEP: 20,
+  // 기기 저장본(moa_book) 형식. 2: 내역 순서가 "앞 = 최근 입력"(작업 18). 1 은 옛 순서라 빠른 길에서 받지 않는다
+  BOOK_FORMAT: 2,
+
+  /**
+   * 저장 성공 뒤 기기 저장본을 다음 loadBook 이 줄 모양으로 고친다 (순수, 입력은 건드리지 않는다).
+   * change = { saved: txns[], install? } | { removed: ids[], renumbered: txns[] } | { restored: txns[], installs? }
+   * 새 거래는 앞에: 시트에는 날짜 오름차순으로 맨 아래에 붙으므로 loadBook 은 마지막으로 붙은 것을 맨 앞에 준다 → 붙인 순서의 역순.
+   * 같은 번호는 제자리에서 바꿔 끼운다. 묶음(installs)은 BookStore 와 같은 규칙으로 맞춘다.
+   */
+  patchStoredBook: function (stored, change) {
+    var book = Object.assign({}, stored.book);
+    var txns = (book.txns || []).slice();
+    var installs = (book.installs || []).map(function (x) { return x; });
+    function indexOfId(list, id) { for (var i = 0; i < list.length; i++) if (list[i].id === id) return i; return -1; }
+    function putInstall(x) { var at = indexOfId(installs, x.id); if (at >= 0) installs[at] = x; else installs.push(x); }
+    function replaceAll(list) {
+      list.forEach(function (t) { var at = indexOfId(txns, t.id); if (at >= 0) txns[at] = t; });
+    }
+    function prependNew(list) { // list = 시트에 붙인 순서
+      var fresh = list.filter(function (t) { return indexOfId(txns, t.id) < 0; });
+      txns = fresh.slice().reverse().concat(txns);
+    }
+    if (change.saved) {
+      replaceAll(change.saved);
+      prependNew(change.saved);
+      if (change.install) putInstall(change.install);
+    } else if (change.removed) {
+      var gone = {};
+      change.removed.forEach(function (id) { gone[id] = true; });
+      txns = txns.filter(function (t) { return !gone[t.id]; });
+      installs = dropFromInstalls(installs, change.removed);
+      replaceAll(change.renumbered || []);
+    } else if (change.restored) {
+      var have = {};
+      txns.forEach(function (t) { have[t.id] = true; });
+      var fresh = [];
+      change.restored.forEach(function (t) { if (!have[t.id]) { have[t.id] = true; fresh.push(t); } });
+      fresh = fresh.map(function (t, i) { return { t: t, i: i }; })
+        .sort(function (a, b) { return a.t.date < b.t.date ? -1 : a.t.date > b.t.date ? 1 : a.i - b.i; })
+        .map(function (x) { return x.t; });
+      var list = change.installs || [];
+      list.forEach(function (x) {
+        var kept = { id: x.id, title: x.title, months: x.months, txnIds: x.txnIds.filter(function (id) { return have[id]; }) };
+        if (kept.txnIds.length) putInstall(kept);
+      });
+      var ids = list.map(function (x) { return x.id; });
+      var all = txns.concat(fresh);
+      var fix = {};
+      renumberInstalls(all, installs.filter(function (x) { return ids.indexOf(x.id) >= 0; })).forEach(function (t) { fix[t.id] = t; });
+      fresh = fresh.map(function (t) { return fix[t.id] || t; });
+      txns = txns.map(function (t) { return fix[t.id] || t; });
+      prependNew(fresh);
+    }
+    book.txns = txns;
+    book.installs = installs;
+    return Object.assign({}, stored, { book: book });
+  },
 
   // 시간 표시 글자 (순수). 초 단위 소수 둘째 자리. t = { open, refresh, sheet, save } (ms, 없으면 건너뜀)
   formatTimes: function (t) {
@@ -2064,17 +2312,26 @@ var Bridge = {
     // 마지막으로 읽은 가계부를 기기에 둔다 (저장 실패는 무시)
     function saveBook(s, loaded) {
       if (!loaded || !loaded.book) return;
-      write('moa_book', { v: 1, bookId: s.bookId, email: s.email, book: loaded.book, problems: loaded.problems || [], savedAt: Date.now() });
+      write('moa_book', { v: Bridge.BOOK_FORMAT, bookId: s.bookId, email: s.email, book: loaded.book, problems: loaded.problems || [], savedAt: Date.now() });
     }
 
-    // 빠른 길 조건: 열쇠(rt)·세션(bookId)·저장본(v:1, 같은 bookId·email)
+    // 저장 성공 뒤 기기 저장본을 고친다 (같은 가계부일 때만, 실패는 무시 — 다음 열기에서 새로 읽는다)
+    function patchBook(s, change) {
+      try {
+        var rec = read('moa_book', null);
+        if (!rec || rec.bookId !== s.bookId || !rec.book || !Array.isArray(rec.book.txns)) return;
+        write('moa_book', Bridge.patchStoredBook(rec, change));
+      } catch (e) { /* 무시 */ }
+    }
+
+    // 빠른 길 조건: 열쇠(rt)·세션(bookId)·저장본(v:2, 같은 bookId·email)
     function fastState() {
       try {
         if (!storage.getItem('moa_rt')) return null;
         var s = read('moa_sess', null);
         if (!s || !s.bookId) return null;
         var b = read('moa_book', null);
-        if (!b || b.v !== 1 || !b.book || b.bookId !== s.bookId || b.email !== s.email) return null;
+        if (!b || b.v !== Bridge.BOOK_FORMAT || !b.book || b.bookId !== s.bookId || b.email !== s.email) return null;
         return { s: s, b: b };
       } catch (e) { return null; }
     }
@@ -2195,6 +2452,7 @@ var Bridge = {
         var t0 = now();
         var result = await store.saveTxn(rest, s.bookId, input, { today: todayKST(new Date()) });
         showTimes({ save: now() - t0 });
+        patchBook(s, { saved: result.txns || [], install: result.install || null });
         if (input.edit !== true && result.txns && result.txns[0]) { // 마지막에 쓴 값은 새 기록만 바꾼다
           var t = result.txns[0];
           var pick = read('moa_lastpick', {});
@@ -2206,7 +2464,15 @@ var Bridge = {
       },
       api_deleteTxns: async function (ids) {
         var s = await gate();
-        return store.deleteTxns(rest, s.bookId, ids);
+        var out = await store.deleteTxns(rest, s.bookId, ids);
+        patchBook(s, { removed: out.removed.map(function (t) { return t.id; }), renumbered: out.renumbered || [] });
+        return out;
+      },
+      api_restoreTxns: async function (txns, installs) {
+        var s = await gate();
+        var ok = await store.restoreTxns(rest, s.bookId, txns, installs);
+        patchBook(s, { restored: txns || [], installs: installs || [] });
+        return ok;
       },
       api_setHomeHint: async function (action) {
         if (action !== 'later' && action !== 'done') throw new Error('안내 단계를 확인해 주세요');
@@ -2493,7 +2759,10 @@ var Login = {
         var srcId = await deps.pickFile(k.accessToken);
         if (!srcId) { showCopy(); return; } // 고르지 않고 닫음
         var newId;
-        try { newId = await store.copyBook(rest, srcId, deps.today()); } catch (e) { throw new Error(Login.COPY_FAIL); }
+        try {
+          newId = await store.copyBook(rest, srcId, deps.today());
+          await store.flipTxnRows(rest, newId); // 옛 줄을 "아래 = 최근"으로 한 번 뒤집기 (#111). 사본 흐름에서만 — 앱을 열 때는 돌지 않는다
+        } catch (e) { throw new Error(Login.COPY_FAIL); }
         var res = await deps.postServer({ op: 'setBook', accessToken: k.accessToken, bookId: newId });
         if (!res || !res.ok) throw new Error(Login.COPY_FAIL);
         var f = await keys.forceRefresh();
