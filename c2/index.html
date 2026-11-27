@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'eeb86d9-202611261017';
+C2.VERSION = 'c0890b7-202611270923';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -1331,8 +1331,6 @@ var Rest = {
         }
         if (status === 403) throw Rest.RestError('denied', 403);
         if (status === 404) throw Rest.RestError('notfound', 404);
-        // 임시 진단: 실패한 요청의 경로·상태·구글 오류 문장을 오류에 붙인다 (열쇠 값은 넣지 않는다)
-        Rest.lastFail = method + ' ' + String(url).split('?')[0].replace(/^https:\/\/[^/]+/, '') + ' st=' + status + ' net=' + !!o.netError + ' body=' + String(o.text || '').slice(0, 200);
         var transient = o.netError || status === 429 || status === 500 || status === 502 || status === 503;
         if (!transient) throw Rest.RestError('other', status);
         if (!retry || attempt >= Rest.BACKOFF.length) {
@@ -1595,6 +1593,27 @@ var BookStore = {
     return map;
   },
 
+  // 내역 A~G 칸의 입력 검사 — src/SheetSetup.js setupRequests 의 내역 규칙과 같게 둔다 (tests/c2-bookstore.test.js 가 비교한다).
+  // 새 줄은 appendCells 로 들어가 시트에 걸어 둔 열 검사를 물려받지 못하므로 칸마다 직접 넣는다.
+  // 금액(E) 검사식만 원본(E2 기준)과 다르다: appendCells 에는 줄 번호가 없어서 자기 칸을 INDIRECT("RC") 로 가리킨다. 검사 없는 열(H~K)은 빠진다.
+  txnValidation: function (col) {
+    var list = function (values) { return { type: 'ONE_OF_LIST', values: values.map(function (v) { return { userEnteredValue: v }; }) }; };
+    var range = function (a1) { return { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: a1 }] }; };
+    switch (col) {
+      case 0: return { condition: { type: 'DATE_IS_VALID' }, strict: true, inputMessage: '날짜만 넣을 수 있어요 (예: 2026-11-16)' };
+      case 1: return { condition: list(['지출', '수입']), strict: true, showCustomUi: true };
+      case 2: return { condition: range("='설정'!$C$2:$C$200"), strict: true, showCustomUi: true };
+      case 3: return { condition: range("='설정'!$I$2:$I$200"), strict: true, showCustomUi: true };
+      case 4: {
+        var me = 'INDIRECT("RC",FALSE)';
+        return { condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=AND(ISNUMBER(' + me + '), ' + me + '>=1, ' + me + '=INT(' + me + '))' }] },
+          strict: true, inputMessage: '1원 이상의 정수만' };
+      }
+      case 6: return { condition: { type: 'BOOLEAN' } };
+      default: return null;
+    }
+  },
+
   // 값 하나를 appendCells 칸으로: 숫자·글자·참거짓, 빈 값은 빈 칸
   cellOf: function (v) {
     if (v === '' || v == null) return {};
@@ -1642,9 +1661,11 @@ var BookStore = {
     var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
     await rest.json('POST', base + ':batchUpdate', { requests: [{ appendCells: {
       sheetId: sheetId,
-      // G 칸(취소 체크박스)은 값과 입력 검사를 함께 넣는다 — 기록 있는 줄에만 체크박스가 있다 (#109)
+      // 칸마다 내역 시트와 같은 입력 검사를 함께 넣는다. G 칸(취소 체크박스)은 값도 함께 — 기록 있는 줄에만 체크박스가 있다 (#109)
       rows: [{ values: txnToRow(txn).concat([txn.id]).map(BookStore.cellOf).map(function (c, j) {
-        return j === 6 ? { userEnteredValue: { boolValue: txn.canceled }, dataValidation: { condition: { type: 'BOOLEAN' } } } : c;
+        var rule = BookStore.txnValidation(j);
+        if (j === 6) c = { userEnteredValue: { boolValue: txn.canceled } };
+        return rule ? Object.assign({}, c, { dataValidation: rule }) : c;
       }) }],
       fields: 'userEnteredValue,dataValidation',
     } }] }, { retry: false });
@@ -1671,11 +1692,17 @@ var BookStore = {
       if (!(id in rows)) throw new Error(BookStore.notFoundMessage);
       if (lines.indexOf(rows[id]) < 0) lines.push(rows[id]);
     });
-    // values:batchClear 는 G열 입력 검사를 못 지운다 → updateCells 로 값과 검사를 함께 비운다. 같은 줄을 두 번 비워도 같으니 재시도 허용
+    // values:batchClear 는 G열 입력 검사를 못 지운다 → updateCells 로 A:K 값만 비우고(A~E 검사는 살린다), G열 체크박스 검사는 따로 지운다.
+    // 같은 줄을 두 번 비워도 같으니 재시도 허용
     var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
-    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: lines.map(function (r) {
-      return { updateCells: { range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 0, endColumnIndex: 11 }, fields: 'userEnteredValue,dataValidation' } };
-    }) });
+    var reqs = [];
+    lines.forEach(function (r) {
+      reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 0, endColumnIndex: 11 }, fields: 'userEnteredValue' } });
+    });
+    lines.forEach(function (r) {
+      reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 6, endColumnIndex: 7 }, fields: 'dataValidation' } });
+    });
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
     return { removed: removed, installs: [], renumbered: [] };
   }
 };
@@ -1829,7 +1856,7 @@ var Bridge = {
 
     function fail(handler, fn, e) {
       var message = e && e.message ? e.message : String(e);
-      try { log(fn, e && e.why ? message + ' | why=' + e.why + ' st=' + e.status + ' | ' + (typeof Rest !== 'undefined' && Rest.lastFail || '') : message); /* 임시 진단 꼬리 */ } catch (x) { /* 기록 실패는 무시 */ }
+      try { log(fn, message); } catch (x) { /* 기록 실패는 무시 */ }
       handler(e instanceof Error ? e : new Error(message));
     }
 
@@ -2116,34 +2143,6 @@ var Login = {
       return win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) })
         .then(function (r) { return r.json(); });
     }
-    // ── 임시 진단 (관문 1 첫 연결, 원인 확정 뒤 지운다): 단계마다 서버 실행 기록에 한 줄 ──
-    var diagT0 = Date.now();
-    function diag(step) {
-      try {
-        var nav = (win.performance && win.performance.getEntriesByType) ? (win.performance.getEntriesByType('navigation')[0] || {}).type : '?';
-        var msg = step + ' | +' + (Date.now() - diagT0) + 'ms | nav=' + nav + ' | rt=' + (storage.getItem('moa_rt') ? 'y' : 'n') +
-          ' | sess=' + (storage.getItem('moa_sess') ? 'y' : 'n') + ' | standalone=' + (win.navigator.standalone === true);
-        win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ op: 'log', where: 'diag', message: msg }) }).catch(function () {});
-      } catch (e) { /* 진단 실패는 무시 */ }
-    }
-    diag('page-load');
-    if (win.addEventListener) win.addEventListener('error', function (ev) { diag('js-error ' + (ev && ev.message) + ' @' + (ev && ev.filename ? '' : '') + (ev && ev.lineno)); });
-    if (win.addEventListener) win.addEventListener('unhandledrejection', function (ev) { diag('unhandled ' + (ev && ev.reason && (ev.reason.message || ev.reason))); });
-    var realRender = render;
-    render = function (html) {
-      var h = (String(html).match(/<h2>([^<]*)<\/h2>/) || [])[1] || '?';
-      try { realRender(html); } catch (e) { diag('render-throw ' + h + ' ' + (e && e.message)); throw e; }
-      try { var a = doc.getElementById('app'); diag('render ' + h + ' hidden=' + (el() && el().hidden) + ' app=' + String((a && a.textContent) || '-').slice(0, 30)); } catch (e2) { /* 진단만 */ }
-    };
-    var realExchange = keys.exchange;
-    keys = Object.assign({}, keys, {
-      exchange: function (code) {
-        diag('code-received');
-        return realExchange(code).then(function (r) { diag('exchange ok=' + (r && r.ok) + ' why=' + (r && r.why)); return r; });
-      }
-    });
-    var realRequestCode = gis.requestCode;
-    gis.requestCode = function (o) { diag('login-click prompt=' + o.prompt); return realRequestCode(o).catch(function (e) { diag('code-error ' + (e && e.message)); throw e; }); };
     obj = Login.create({
       keys: keys, rest: rest, store: BookStore, storage: storage, gis: gis, pickFile: pickFile, postServer: postServer,
       boot: function () { var b = el(); if (b) b.hidden = true; win.App.boot(); },
