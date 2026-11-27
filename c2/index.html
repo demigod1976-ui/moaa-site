@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'a76f298-202611271246';
+C2.VERSION = '78bef8e-202611271255';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -3073,6 +3073,8 @@ var Bridge = {
   TIMES_KEEP: 20,
   // 기기 저장본(moa_book) 형식. 2: 내역 순서가 "앞 = 최근 입력"(작업 18). 1 은 옛 순서라 빠른 길에서 받지 않는다
   BOOK_FORMAT: 2,
+  // #114: false = 열 때 저장본을 먼저 보이지 않고 로딩 화면 → 최신. true 면 빠른 길(작업 12)
+  HOME_FIRST: false,
 
   /**
    * 저장 성공 뒤 기기 저장본을 다음 loadBook 이 줄 모양으로 고친다 (순수, 입력은 건드리지 않는다).
@@ -3269,6 +3271,7 @@ var Bridge = {
 
     // 빠른 길 조건: 열쇠(rt)·세션(bookId)·저장본(v:2, 같은 bookId·email)
     function fastState() {
+      if (!Bridge.HOME_FIRST) return null; // #114: 홈 먼저 보이기 끔 — 항상 느린 길(로딩 화면 → 최신)
       try {
         if (!storage.getItem('moa_rt')) return null;
         var s = read('moa_sess', null);
