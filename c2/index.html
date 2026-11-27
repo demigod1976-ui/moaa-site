@@ -1152,17 +1152,21 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'd7279a2-202611270938';
+C2.VERSION = '7bb34d8-202611271025';
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
 var Keys = {
   FRESH_MS: 5 * 60 * 1000, // 끝나기까지 이보다 많이 남아야 fresh
-  NAMES: ['moa_rt', 'moa_at', 'moa_exp', 'moa_sess', 'moa_book'],
+  // 이 기기에 둔 모아 열쇠·기록 전부. moa_prefs(화면 톤·모드)는 기기 모양이라 로그아웃해도 남긴다
+  NAMES: ['moa_rt', 'moa_at', 'moa_exp', 'moa_sess', 'moa_book', 'moa_lastpick', 'moa_homehint', 'moa_times', 'moa_famsync', 'moa_onboard'],
+  REVOKE_URL: 'https://oauth2.googleapis.com/revoke',
+  GRANT_MS: 55 * 60 * 1000, // 서버가 끝나는 시각을 못 주면 이 만큼으로 본다
 
   create: function (deps) {
     var fetchFn = deps.fetch, storage = deps.storage, now = deps.now, serverUrl = deps.serverUrl;
-    var inflight = null;
+    var inflight = null, exInflight = null;
+    var gen = 0; // 로그아웃마다 올라간다. 앞 세대에서 시작한 요청의 응답은 저장하지 않는다
 
     function get(k) { return storage.getItem(k); }
     function clearAll() { Keys.NAMES.forEach(function (k) { storage.removeItem(k); }); }
@@ -1181,6 +1185,7 @@ var Keys = {
 
     // 서버에 요청 → ensure와 같은 모양의 결과. 응답에 세션이 있으면 늘 저장한다
     async function call(body) {
+      var myGen = gen;
       var res;
       try {
         var r = await fetchFn(serverUrl, {
@@ -1192,6 +1197,7 @@ var Keys = {
       } catch (e) {
         return { ok: false, why: 'offline' };
       }
+      if (myGen !== gen) return { ok: false, why: 'login' }; // 기다리는 사이 로그아웃함
       if (!res || typeof res !== 'object') return { ok: false, why: 'offline' };
       if (res.session) saveSession(res.session);
       if (!res.ok) {
@@ -1204,7 +1210,8 @@ var Keys = {
       }
       if (res.refreshToken) storage.setItem('moa_rt', res.refreshToken);
       storage.setItem('moa_at', res.accessToken);
-      storage.setItem('moa_exp', String(res.expiresAt));
+      var exp = Number(res.expiresAt);
+      storage.setItem('moa_exp', String(exp > 0 ? exp : now() + Keys.GRANT_MS));
       return okResult();
     }
 
@@ -1217,6 +1224,36 @@ var Keys = {
         );
       }
       return inflight;
+    }
+
+    function exchange(code) {
+      if (!exInflight) {
+        exInflight = call({ op: 'exchange', code: code }).then(
+          function (r) { exInflight = null; return r; },
+          function (e) { exInflight = null; throw e; }
+        );
+      }
+      return exInflight;
+    }
+
+    function signOut() { gen++; clearAll(); } // 이 기기 열쇠만 지운다 (구글 취소 없음)
+
+    // 모든 기기 연결 끊기: 구글에 갱신용 열쇠를 취소시킨다. 200·400(이미 무효)이면 이 기기도 로그아웃
+    async function revokeAll() {
+      var rt = get('moa_rt');
+      if (!rt) { signOut(); return { ok: true }; }
+      var r;
+      try {
+        r = await fetchFn(Keys.REVOKE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'token=' + encodeURIComponent(rt)
+        });
+      } catch (e) {
+        return { ok: false, why: 'offline' };
+      }
+      if (r && (r.status === 200 || r.status === 400)) { signOut(); return { ok: true }; }
+      return { ok: false, why: 'offline' };
     }
 
     function refresh() { return shared({ op: 'refresh', refreshToken: get('moa_rt') }); }
@@ -1233,8 +1270,9 @@ var Keys = {
         if (status() === 'none') return { ok: false, why: 'login' };
         return refresh();
       },
-      exchange: function (code) { return shared({ op: 'exchange', code: code }); },
-      signOut: clearAll // 이 기기 열쇠만 지운다 (구글 취소 없음)
+      exchange: exchange,
+      signOut: signOut,
+      revokeAll: revokeAll
     };
   },
 
@@ -1930,8 +1968,31 @@ var Bridge = {
     if (!win.google.script && script) win.google.script = script;
   },
 
+  // 한 화면에 열쇠·REST 하나. Login·Account 도 같은 것을 쓴다 (늦게 불러도 같은 것)
+  shared: function (win) {
+    if (!win.__c2shared) {
+      var keys = Keys.default();
+      win.__c2shared = { keys: keys, rest: Rest.default(keys) };
+    }
+    return win.__c2shared;
+  },
+
+  // 이 기기에서 로그아웃 → 새로 고침
+  signOut: function (win) {
+    Bridge.shared(win).keys.signOut();
+    win.location.reload();
+  },
+
+  // 모든 기기에서 연결 끊기 (구글 취소). 성공이면 새로 고침
+  disconnectAll: async function (win) {
+    var r = await Bridge.shared(win).keys.revokeAll();
+    if (r && r.ok) { win.location.reload(); return { ok: true }; }
+    return { ok: false, message: Bridge.OFFLINE };
+  },
+
   installDefault: function (win) {
-    var keys = Keys.default();
+    var sh = Bridge.shared(win);
+    var keys = sh.keys;
     var storage = null;
     try { storage = win.localStorage; } catch (e) { storage = null; }
     if (!storage) {
@@ -1940,7 +2001,7 @@ var Bridge = {
     }
     Bridge.install(win, {
       keys: keys,
-      rest: Rest.default(keys),
+      rest: sh.rest,
       store: BookStore,
       storage: storage,
       now: function () { return win.performance.now(); },
@@ -1952,6 +2013,90 @@ var Bridge = {
         } catch (e) { /* 무시 */ }
       }
     });
+  }
+};
+
+;
+// 설정 화면 맨 아래 '계정' 카드 (C-2 시험 기간 전용, 전환 때 Settings.html 로). src/ui 는 고치지 않고 App.render 를 감싸 덧붙인다.
+// 전역으로 쓰는 것: Bridge(shared·signOut·disconnectAll). 브라우저 전용 부분은 installDefault 안에서만 window 를 쓴다
+var Account = {
+  CONFIRM: '모든 기기에서 모아 연결을 끊을까요? 이 기기와 다른 기기 모두 다시 로그인해야 해요.',
+
+  // deps = { App, doc, storage, signOut(), disconnectAll() → Promise<{ok, message?}>, confirm(msg) → bool }
+  create: function (deps) {
+    var App = deps.App, doc = deps.doc;
+
+    function email() {
+      try { var s = JSON.parse(deps.storage.getItem('moa_sess')); return s && s.email ? String(s.email) : ''; } catch (e) { return ''; }
+    }
+
+    function cardHtml() {
+      return '<div class="card" id="c2-account">' +
+        '<div class="label">계정</div>' +
+        '<div class="meta" style="overflow-wrap:anywhere">' + App.esc(email()) + '</div>' +
+        '<button type="button" class="btn" data-c2="signout" style="margin-top:14px">이 기기에서 로그아웃</button>' +
+        '<button type="button" class="btn danger-btn" data-c2="disconnect" style="margin-top:10px">모든 기기에서 연결 끊기</button>' +
+        '<p class="small" id="c2-account-msg" style="color:var(--sub)" role="status"></p>' +
+        '</div>';
+    }
+
+    // App.render 직후: 설정 화면이 맨 위(App.stack 의 마지막이 settings. 설정은 탭이 아니라 쌓이는 화면)일 때만 카드를 하나 덧붙인다
+    function decorate() {
+      var top = App && App.stack && App.stack[App.stack.length - 1];
+      if (!top || top.name !== 'settings') return;
+      var app = doc.getElementById('app');
+      if (!app) return;
+      var screen = app.querySelector('.screen');
+      if (!screen || screen.querySelector && screen.querySelector('#c2-account')) return;
+      screen.insertAdjacentHTML('beforeend', cardHtml());
+    }
+
+    function say(text) {
+      var m = doc.getElementById('c2-account-msg');
+      if (m) m.textContent = text;
+    }
+
+    async function onAct(act) {
+      if (act === 'signout') { deps.signOut(); return; }
+      if (act === 'disconnect') {
+        if (!deps.confirm(Account.CONFIRM)) return;
+        var r = await deps.disconnectAll();
+        if (!r || !r.ok) say((r && r.message) || Bridge.OFFLINE);
+      }
+    }
+
+    return { decorate: decorate, onAct: onAct, cardHtml: cardHtml };
+  },
+
+  // 브라우저 구성. App 은 화면 스크립트가 나중에 정의하므로 DOMContentLoaded 뒤(또는 나타날 때)에 감싼다
+  installDefault: function (win) {
+    var doc = win.document;
+    var storage = { getItem: function (k) { try { return win.localStorage.getItem(k); } catch (e) { return null; } } };
+    var wrapped = false;
+    function wrap() {
+      if (wrapped || !win.App || typeof win.App.render !== 'function') return wrapped;
+      wrapped = true;
+      var acct = Account.create({
+        App: win.App, doc: doc, storage: storage,
+        signOut: function () { Bridge.signOut(win); },
+        disconnectAll: function () { return Bridge.disconnectAll(win); },
+        confirm: function (m) { return win.confirm(m); }
+      });
+      var orig = win.App.render;
+      win.App.render = function () {
+        var out = orig.apply(this, arguments);
+        try { acct.decorate(); } catch (e) { /* 카드가 안 그려져도 화면은 그대로 */ }
+        return out;
+      };
+      doc.addEventListener('click', function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest('[data-c2]') : null;
+        if (b) acct.onAct(b.getAttribute('data-c2'));
+      });
+      return true;
+    }
+    if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', wrap);
+    else wrap();
+    return { wrap: wrap };
   }
 };
 
@@ -2077,8 +2222,14 @@ var Login = {
 
   // 브라우저 구성: 진짜 의존을 엮어 window.Login 에 둔다 (Bridge 가 쓴다)
   installDefault: function (win) {
-    var keys = Keys.default();
-    var rest = Rest.default(keys);
+    // 열쇠·REST 는 Bridge.shared 것을 늦게(쓸 때) 가져온다. 설치 순서와 상관없이 같은 것
+    function lazy(pick, names) {
+      var o = {};
+      names.forEach(function (n) { o[n] = function () { var t = pick(Bridge.shared(win)); return t[n].apply(t, arguments); }; });
+      return o;
+    }
+    var keys = lazy(function (s) { return s.keys; }, ['exchange', 'forceRefresh', 'ensure', 'signOut', 'status', 'revokeAll']);
+    var rest = lazy(function (s) { return s.rest; }, ['json']);
     var doc = win.document;
     var storage = {
       getItem: function (k) { try { return win.localStorage.getItem(k); } catch (e) { return null; } },
@@ -2234,7 +2385,7 @@ var Version = {
 </style>
 <div id="c2-login" hidden></div>
 
-  <script>Login.installDefault(window); Bridge.installDefault(window); Version.checkDefault(window);</script>
+  <script>Login.installDefault(window); Bridge.installDefault(window); Account.installDefault(window); Version.checkDefault(window);</script>
   <div id="app"></div>
   <div id="sheetBg" class="sheet-bg" onclick="App.closeSheet()"></div>
   <div id="sheet" class="sheet" role="dialog" aria-modal="true"></div>
