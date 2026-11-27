@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = 'e69225b-202611271037';
+C2.VERSION = 'c3c983a-202611271046';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -2295,7 +2295,7 @@ var Bridge = {
       store: BookStore,
       storage: storage,
       now: function () { return win.performance.now(); },
-      login: win.Login,
+      login: win.C2Login,
       log: function (where, message) {
         try {
           win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ op: 'log', where: where, message: message }) })
@@ -2510,7 +2510,7 @@ var Login = {
       onLogin: onLogin, onOtherAccount: onOtherAccount, onCopy: onCopy };
   },
 
-  // 브라우저 구성: 진짜 의존을 엮어 window.Login 에 둔다 (Bridge 가 쓴다)
+  // 브라우저 구성: 진짜 의존을 엮어 window.C2Login 에 둔다 (Bridge 가 쓴다)
   installDefault: function (win) {
     // 열쇠·REST 는 Bridge.shared 것을 늦게(쓸 때) 가져온다. 설치 순서와 상관없이 같은 것
     function lazy(pick, names) {
@@ -2627,7 +2627,7 @@ var Login = {
       render: render,
       today: function () { return todayKST(new Date()); }
     });
-    win.Login = obj;
+    win.C2Login = obj; // win.Login 은 정적 값 묶음이라 덮어쓰지 않는다
     return obj;
   }
 };
