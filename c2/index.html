@@ -1152,7 +1152,152 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '7bb34d8-202611271025';
+C2.VERSION = 'e69225b-202611271037';
+;
+/**
+ * [순수] 라이선스 레코드 규칙.
+ * 레코드: { role:'buyer'|'family', buyer, purchasedAt, expiresAt|null, memo }
+ * 저장 형식: 'role|buyer|purchasedAt|expiresAt|memo' (스크립트 속성 용량 절약)
+ */
+var LICENSE_FAMILY_MAX = 4;
+var LICENSE_KEY_PREFIX = 'LIC_';
+
+function normalizeEmail(s) {
+  return String(s == null ? '' : s).trim().toLowerCase();
+}
+
+function isValidEmail(s) {
+  return /^[^\s@|]+@[^\s@|]+\.[^\s@|]+$/.test(normalizeEmail(s));
+}
+
+function licenseKey(email) {
+  return LICENSE_KEY_PREFIX + normalizeEmail(email);
+}
+
+function encodeLicense(rec) {
+  return [
+    rec.role,
+    normalizeEmail(rec.buyer),
+    rec.purchasedAt || '',
+    rec.expiresAt || '',
+    String(rec.memo || '').replace(/\|/g, ''),
+  ].join('|');
+}
+
+function decodeLicense(s) {
+  var p = String(s).split('|');
+  return {
+    role: p[0],
+    buyer: p[1] || '',
+    purchasedAt: p[2] || '',
+    expiresAt: p[3] ? p[3] : null,
+    memo: p[4] || '',
+  };
+}
+
+function isLicenseActive(rec, today) {
+  if (!rec) return false;
+  return !rec.expiresAt || today <= rec.expiresAt;
+}
+
+/** 스크립트 속성 객체에서 구매자에게 딸린 가족 이메일 목록(정렬) */
+function familyEmailsOf(props, buyerEmail) {
+  var buyer = normalizeEmail(buyerEmail);
+  return Object.keys(props || {})
+    .filter(function (k) { return k.indexOf(LICENSE_KEY_PREFIX) === 0; })
+    .map(function (k) { return { email: k.slice(LICENSE_KEY_PREFIX.length), rec: decodeLicense(props[k]) }; })
+    .filter(function (x) { return x.rec.role === 'family' && x.rec.buyer === buyer; })
+    .map(function (x) { return x.email; })
+    .sort();
+}
+
+/**
+ * 원하는 공유 대상과 현재 공유 대상의 차이. 소유자는 해제하지 않고,
+ * 해제는 앱이 공유했던 사람(managed)만 — 구매자가 직접 공유한 사람은 건드리지 않는다
+ */
+function shareDiff(desired, current, ownerEmail, managed) {
+  var owner = normalizeEmail(ownerEmail);
+  var want = {};
+  (desired || []).forEach(function (e) { want[normalizeEmail(e)] = true; });
+  var have = {};
+  (current || []).forEach(function (e) { have[normalizeEmail(e)] = true; });
+  var mine = {};
+  (managed || []).forEach(function (e) { mine[normalizeEmail(e)] = true; });
+  return {
+    add: Object.keys(want).filter(function (e) { return !have[e] && e !== owner; }).sort(),
+    remove: Object.keys(have).filter(function (e) { return !want[e] && mine[e] && e !== owner; }).sort(),
+  };
+}
+
+/** 판매자 등록·수정: 저장할 키(set)와 지울 키(remove). 다른 구매에 속한 이메일이면 예외 */
+function purchaseWrites(props, p, today) {
+  var errors = validatePurchase(p);
+  if (errors.length) throw new Error(errors.join(' / '));
+  var buyer = normalizeEmail(p.buyer);
+  var family = (p.family || []).map(normalizeEmail).filter(function (e) { return e; });
+  [buyer].concat(family).forEach(function (e) {
+    var raw = props[licenseKey(e)];
+    if (!raw) return;
+    var rec = decodeLicense(raw);
+    var owner = rec.role === 'buyer' ? e : rec.buyer;
+    if (owner !== buyer) throw new Error('이미 다른 구매에 등록된 이메일입니다: ' + e);
+  });
+  var purchasedAt = p.purchasedAt || today;
+  var expiresAt = p.expiresAt || null;
+  var set = {};
+  set[licenseKey(buyer)] = encodeLicense({ role: 'buyer', buyer: buyer, purchasedAt: purchasedAt, expiresAt: expiresAt, memo: p.memo || '' });
+  family.forEach(function (e) {
+    set[licenseKey(e)] = encodeLicense({ role: 'family', buyer: buyer, purchasedAt: purchasedAt, expiresAt: expiresAt, memo: '' });
+  });
+  var remove = familyEmailsOf(props, buyer)
+    .filter(function (e) { return family.indexOf(e) < 0; })
+    .map(licenseKey);
+  return { set: set, remove: remove };
+}
+
+/** 판매자 목록: 구매자별 { buyer, family, purchasedAt, expiresAt, memo }, 최근 구매 순, 검색어 포함 */
+function listPurchases(props, query) {
+  var q = normalizeEmail(query);
+  return Object.keys(props || {})
+    .filter(function (k) { return k.indexOf(LICENSE_KEY_PREFIX) === 0; })
+    .map(function (k) { return { email: k.slice(LICENSE_KEY_PREFIX.length), rec: decodeLicense(props[k]) }; })
+    .filter(function (x) { return x.rec.role === 'buyer'; })
+    .map(function (x) {
+      return { buyer: x.email, family: familyEmailsOf(props, x.email), purchasedAt: x.rec.purchasedAt, expiresAt: x.rec.expiresAt, memo: x.rec.memo };
+    })
+    .filter(function (p) {
+      if (!q) return true;
+      return [p.buyer, p.memo].concat(p.family).some(function (s) { return String(s).toLowerCase().indexOf(q) >= 0; });
+    })
+    .sort(function (a, b) {
+      if (a.purchasedAt !== b.purchasedAt) return a.purchasedAt < b.purchasedAt ? 1 : -1;
+      return a.buyer < b.buyer ? -1 : 1;
+    });
+}
+
+/** 구매 삭제 시 지울 키: 구매자 + 가족 */
+function purchaseKeys(props, buyerEmail) {
+  return [licenseKey(buyerEmail)].concat(familyEmailsOf(props, buyerEmail).map(licenseKey));
+}
+
+function validatePurchase(p) {
+  var errors = [];
+  var buyer = normalizeEmail(p.buyer);
+  var family = (p.family || []).map(normalizeEmail).filter(function (e) { return e; });
+  if (!isValidEmail(buyer)) errors.push('구매자 이메일 형식이 올바르지 않습니다: ' + p.buyer);
+  if (family.length > LICENSE_FAMILY_MAX) errors.push('가족은 최대 ' + LICENSE_FAMILY_MAX + '명까지 등록할 수 있습니다');
+  family.forEach(function (e) {
+    if (!isValidEmail(e)) errors.push('가족 이메일 형식이 올바르지 않습니다: ' + e);
+    if (e === buyer) errors.push('구매자 이메일이 가족 목록에 있습니다: ' + e);
+  });
+  var seen = {};
+  family.forEach(function (e) {
+    if (seen[e]) errors.push('가족 이메일이 중복되었습니다: ' + e);
+    seen[e] = true;
+  });
+  return errors;
+}
+
 ;
 // 기기 열쇠 관리: 갱신용 열쇠·접근 열쇠를 이 기기(localStorage)에 두고, 판매자 서버로 교환·갱신한다.
 // 접두 moa_ : rt(갱신용), at(접근), exp(끝나는 시각 ms), sess(세션 JSON)
@@ -1310,8 +1455,10 @@ var Rest = {
   },
 
   // why: login|denied|notfound|timeout|blocked|offline|other, status: HTTP 상태 또는 0
-  RestError: function (why, status) {
+  // detail: 구글 오류 본문의 message (있을 때만)
+  RestError: function (why, status, detail) {
     var e = new Error(Rest.MESSAGES[why] || Rest.MESSAGES.other);
+    if (detail) e.detail = detail;
     e.name = 'RestError';
     e.why = why;
     e.status = status || 0;
@@ -1367,10 +1514,14 @@ var Rest = {
           token = f.accessToken;
           continue;
         }
-        if (status === 403) throw Rest.RestError('denied', 403);
+        var body = o.netError ? {} : parse(o.text);
+        var err = (body && body.error) || {};
+        var reason = err.errors && err.errors[0] && err.errors[0].reason;
+        var rateLimited = status === 403 && (reason === 'userRateLimitExceeded' || reason === 'rateLimitExceeded');
+        if (status === 403 && !rateLimited) throw Rest.RestError('denied', 403, err.message);
         if (status === 404) throw Rest.RestError('notfound', 404);
-        var transient = o.netError || status === 429 || status === 500 || status === 502 || status === 503;
-        if (!transient) throw Rest.RestError('other', status);
+        var transient = o.netError || rateLimited || status === 429 || status === 500 || status === 502 || status === 503;
+        if (!transient) throw Rest.RestError('other', status, err.message);
         if (!retry || attempt >= Rest.BACKOFF.length) {
           throw Rest.RestError(o.netError ? 'offline' : 'other', status);
         }
@@ -1742,6 +1893,50 @@ var BookStore = {
     });
     await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
     return { removed: removed, installs: [], renumbered: [] };
+  },
+
+  /**
+   * 구매자 기기가 가계부의 드라이브 공유를 세션의 가족 목록에 맞춘다 (C-2 작업 16).
+   * "앱이 공유한 사람"은 파일 appProperties 의 's:<이메일>' 키 (속성 하나 124바이트 한도라 사람마다 한 키).
+   * 성공한 것만 appProperties 에 반영한다. 실패는 경고로 모아 돌려준다 (다른 사람은 계속 진행).
+   * shareDiff 는 src/License.js 의 순수 함수 (같은 규칙: 소유자·직접 공유한 사람은 건드리지 않음).
+   */
+  syncFamilyShares: async function (rest, bookId, ownerEmail, family) {
+    var base = Rest.DRIVE + 'files/' + encodeURIComponent(bookId);
+    var warnings = [];
+    var perms = ((await rest.json('GET', base + '/permissions?fields=' + encodeURIComponent('permissions(id,emailAddress,type,role)'))).permissions || [])
+      .filter(function (p) { return p.type === 'user' && p.emailAddress; });
+    var props = (await rest.json('GET', base + '?fields=appProperties')).appProperties || {};
+    var managed = Object.keys(props).filter(function (k) { return k.indexOf('s:') === 0; }).map(function (k) { return k.slice(2); });
+    var diff = shareDiff(family, perms.map(function (p) { return p.emailAddress; }), ownerEmail, managed);
+    var patch = {}, changed = false;
+    for (var i = 0; i < diff.add.length; i++) {
+      var email = diff.add[i];
+      try {
+        await rest.json('POST', base + '/permissions?sendNotificationEmail=false', { type: 'user', role: 'writer', emailAddress: email });
+        patch['s:' + email] = '1'; changed = true;
+      } catch (e) {
+        if (/no Google account|Notify people/i.test(String(e.detail || e.message))) {
+          warnings.push(email + ' 로 된 구글 계정이 없습니다. 이메일 주소를 확인해 주세요');
+        } else warnings.push(e.message);
+      }
+    }
+    for (var j = 0; j < diff.remove.length; j++) {
+      var gone = diff.remove[j];
+      var targets = perms.filter(function (p) { return normalizeEmail(p.emailAddress) === gone && p.role !== 'owner'; });
+      try {
+        for (var k = 0; k < targets.length; k++) await rest.json('DELETE', base + '/permissions/' + encodeURIComponent(targets[k].id));
+        patch['s:' + gone] = null; changed = true;
+      } catch (e) {
+        warnings.push(gone + ' 공유 해제 실패: ' + e.message);
+      }
+    }
+    if (changed) {
+      try { await rest.json('PATCH', base, { appProperties: patch }); } catch (e) {
+        warnings.push('공유 기록 저장 실패: ' + e.message);
+      }
+    }
+    return { warnings: warnings };
   }
 };
 
@@ -1752,9 +1947,13 @@ var BookStore = {
 var Bridge = {
   DEFAULT_BOOK_NAME: '우리집 가계부', // src/Api.js 와 같은 값
   SUPPORT_EMAIL: 'support@axonbridge.org',
-  NOT_YET: '관문 1에서는 아직 안 되는 기능이에요',
+  NOT_YET: '아직 C-2에서는 안 되는 기능이에요',
+  FAMILY_WAIT: '구매자가 먼저 앱을 한 번 열어야 가계부에 연결할 수 있습니다.',
+  ONBOARD_ORDER: ['name', 'tone', 'done'],
+  PREF_TONES: ['forest', 'sand', 'sea', 'lavender'],
+  PREF_MODES: ['auto', 'light', 'dark'],
   OFFLINE: '연결이 불안정해요. 잠시 뒤 다시 시도해 주세요',
-  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_setHomeHint'],
+  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_setHomeHint', 'api_connectBook', 'api_setOnboard', 'api_savePrefs'],
   TIMES_KEEP: 20,
 
   // 시간 표시 글자 (순수). 초 단위 소수 둘째 자리. t = { open, refresh, sheet, save } (ms, 없으면 건너뜀)
@@ -1784,6 +1983,12 @@ var Bridge = {
   install: function (win, deps) {
     var keys = deps.keys, rest = deps.rest, store = deps.store, storage = deps.storage;
     var now = deps.now, login = deps.login, log = deps.log || function () {};
+    var postServer = deps.postServer || function (body) {
+      return win.fetch(C2.SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json(); });
+    };
+    var reloadPage = deps.onReload || function () { try { win.location.reload(); } catch (e) { /* 무시 */ } };
+    var token = null; // 마지막으로 받은 접근 열쇠
     var startAt = now();
     var last = {}; // 화면 맨 아래에 보일 가장 최근 값
 
@@ -1821,8 +2026,26 @@ var Bridge = {
         if (k.why === 'blocked') { login.showBlocked(k.session); return new Promise(function () {}); }
         throw new Error(Bridge.OFFLINE);
       }
-      if (!k.session || !k.session.bookId) { login.showCopy(); return new Promise(function () {}); }
+      token = k.accessToken;
+      if (!k.session || !k.session.bookId) {
+        if (k.session && k.session.role === 'family') {
+          var blocked = new Error(Bridge.FAMILY_WAIT);
+          blocked.familyBlocked = k.session;
+          throw blocked;
+        }
+        login.showCopy(); return new Promise(function () {});
+      }
       return k.session;
+    }
+
+    function isLost(e) { return !!e && e.name === 'RestError' && (e.why === 'denied' || e.why === 'notfound'); }
+
+    // 가족이 가계부를 읽지 못하면 저장본을 지우고 새로 고쳐 연결 화면으로 (C11)
+    function lostForFamily(s, e) {
+      if (!(s.role === 'family' && isLost(e))) return false;
+      try { storage.removeItem('moa_book'); } catch (x) { /* 무시 */ }
+      reloadPage();
+      return true;
     }
 
     function readLastPick(book) {
@@ -1866,10 +2089,27 @@ var Bridge = {
           sheetUrl: 'https://docs.google.com/spreadsheets/d/' + s.bookId,
           warnings: [], supportEmail: Bridge.SUPPORT_EMAIL,
           expiresAt: s.expiresOn || null,
-          onboard: null,
+          onboard: (function () { var o = read('moa_onboard', null); return o === 'name' || o === 'tone' ? o : null; })(),
           bookName: book.info.name || Bridge.DEFAULT_BOOK_NAME,
           homeHint: Bridge.normalizeHomeHint(read('moa_homehint', {}))
       };
+    }
+
+    // 구매자 기기가 드라이브 공유를 가족 목록에 맞춘다. 반드시 gate() 가 새로 확인한 세션으로만 부른다. 화면 뒤에서 한 번, 같은 가족·가계부면 건너뛴다
+    function scheduleShareSync(s) {
+      if (!s || s.role !== 'buyer' || !s.bookId || typeof store.syncFamilyShares !== 'function') return;
+      var fam = Array.isArray(s.family) ? s.family : [];
+      var mark = s.bookId + '|' + fam.join(',');
+      if (read('moa_famsync', null) === mark) return;
+      var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+      later(function () {
+        Promise.resolve().then(function () { return store.syncFamilyShares(rest, s.bookId, s.email, fam); }).then(function (r) {
+          var w = (r && r.warnings) || [];
+          if (w.length) { try { log('share', w.join(' / ')); } catch (x) { /* 무시 */ } } else write('moa_famsync', mark);
+        }, function (e) {
+          try { log('share', e && e.message ? e.message : String(e)); } catch (x) { /* 무시 */ }
+        });
+      }, 0);
     }
 
     var fns = {
@@ -1886,19 +2126,69 @@ var Bridge = {
           return out;
         }
         var t0 = now();
-        var s = await gate();
+        var s;
+        try { s = await gate(); } catch (e) {
+          if (e && e.familyBlocked) {
+            var fs = e.familyBlocked;
+            return { state: 'BLOCKED', email: fs.email, role: 'family', today: todayKST(new Date()), reason: Bridge.FAMILY_WAIT };
+          }
+          throw e;
+        }
         var t1 = now();
-        var loaded = await store.loadBook(rest, s.bookId, {});
+        var loaded;
+        try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (e) {
+          if (s.role === 'family' && isLost(e)) {
+            return {
+              state: 'NEEDS_CONNECT', email: s.email, role: 'family', today: todayKST(new Date()),
+              picker: { token: token, apiKey: C2.PICKER_KEY, appId: C2.APP_ID, fileId: s.bookId },
+              homeHint: Bridge.normalizeHomeHint(read('moa_homehint', {}))
+            };
+          }
+          throw e;
+        }
         var t2 = now();
         saveBook(s, loaded);
         showTimes({ open: t2 - startAt, refresh: t1 - t0, sheet: t2 - t1 });
+        scheduleShareSync(s);
         return ready(s, loaded.book, loaded.problems);
       },
       api_load: async function () {
         var s = await gate();
-        var loaded = await store.loadBook(rest, s.bookId, {});
+        var loaded;
+        try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (e) {
+          if (lostForFamily(s, e)) return new Promise(function () {});
+          throw e;
+        }
         saveBook(s, loaded);
+        scheduleShareSync(s); // 열쇠 확인(gate)에서 막 받은 세션으로만 맞춘다 (저장된 moa_sess 는 오래됐을 수 있다)
         return loaded;
+      },
+      api_connectBook: async function (fileId) {
+        var s = await gate();
+        if (fileId !== s.bookId) throw new Error('구매자의 가계부 파일을 선택해 주세요');
+        await store.loadBook(rest, fileId, {}); // 접근 확인 (실패하면 예외)
+        try {
+          var r = await postServer({ op: 'markConnected', accessToken: token, bookId: fileId });
+          if (r && r.ok === true && r.first === true && read('moa_onboard', null) == null) write('moa_onboard', 'name');
+        } catch (e) { try { log('api_connectBook', e && e.message ? e.message : String(e)); } catch (x) { /* 무시 */ } }
+        return 'READY';
+      },
+      api_setOnboard: async function (step) {
+        var order = Bridge.ONBOARD_ORDER;
+        if (order.indexOf(step) < 0) throw new Error('단계를 확인해 주세요');
+        var cur = read('moa_onboard', null);
+        if (order.indexOf(cur) < 0) throw new Error('첫 접속 단계가 아니에요');
+        if (order.indexOf(step) <= order.indexOf(cur)) throw new Error('이전 단계로는 돌아갈 수 없어요');
+        if (step === 'done') { try { storage.removeItem('moa_onboard'); } catch (e) { /* 무시 */ } } else write('moa_onboard', step);
+        return { onboard: step === 'done' ? null : step };
+      },
+      api_savePrefs: async function (input) {
+        input = input || {};
+        if (typeof input.tone !== 'string' || Bridge.PREF_TONES.indexOf(input.tone) < 0) throw new Error('색깔 톤을 다시 골라 주세요');
+        if (typeof input.mode !== 'string' || Bridge.PREF_MODES.indexOf(input.mode) < 0) throw new Error('밝기를 다시 골라 주세요');
+        var prefs = { tone: input.tone, mode: input.mode };
+        write('moa_prefs', prefs);
+        return prefs;
       },
       api_saveTxn: async function (input) {
         var s = await gate();
@@ -5377,7 +5667,7 @@ App.screens.connect = {
     var self = this;
     if (!cfg.apiKey || !cfg.appId) { self.error = '판매자 설정이 끝나지 않았어요. 판매자에게 문의해 주세요.'; App.render(); return; }
     if (typeof gapi === 'undefined') { self.error = '파일 선택 창을 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요.'; App.render(); return; }
-    gapi.load('picker', function () {
+    gapi.load('picker', function () { Bridge.restoreScript(window, Bridge.script);
       var view = new google.picker.DocsView(google.picker.ViewId.SPREADSHEETS)
         .setFileIds(cfg.fileId)
         .setMode(google.picker.DocsViewMode.LIST);
@@ -5386,7 +5676,7 @@ App.screens.connect = {
         .setOAuthToken(cfg.token)
         .setDeveloperKey(cfg.apiKey)
         .setAppId(cfg.appId)
-        .setOrigin('https://script.google.com')
+        .setOrigin(location.origin)
         .setCallback(function (d) {
           if (d.action !== google.picker.Action.PICKED) return;
           App.call('api_connectBook', d.docs[0].id).then(function () {
