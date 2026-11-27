@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '967c8fe-202611271104';
+C2.VERSION = '1eadd8f-202611271211';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -1296,6 +1296,284 @@ function validatePurchase(p) {
     seen[e] = true;
   });
   return errors;
+}
+
+;
+/**
+ * [순수] 가계부 시트 만들기 — 탭 목록, 드롭다운·입력 검사·글자 형식·보호·서식 요청, 처음 채울 값.
+ * 규칙은 spikes/sheet-v2/Code.js 에서 검증한 요청 모양 그대로. 범위는 머리 줄 아래 열 전체(endRowIndex 생략).
+ * 열 위치는 docs/plan.md "시트 구성" 표.
+ */
+var CAT_LIST_RANGE = "='설정'!$C$2:$C$200";
+var PAY_LIST_RANGE = "='설정'!$I$2:$I$200";
+var DAY_TOKEN_ = '([1-9]|1[0-9]|2[0-8]|말일)';
+var WEEKDAY_TOKEN_ = '(월|화|수|목|금|토|일)';
+var MONTH_TOKEN_ = '([1-9]|1[0-2])';
+
+function sheetSpecs() {
+  return [TABS.month, TABS.yearly, TABS.txns, TABS.budgets, TABS.settings, TABS.info].map(function (t, i) {
+    return { title: t, index: i, hidden: t === TABS.info };
+  });
+}
+
+function gridRange_(sheetId, r0, r1, c0, c1) {
+  var g = { sheetId: sheetId };
+  if (r0 != null) g.startRowIndex = r0;
+  if (r1 != null) g.endRowIndex = r1;
+  if (c0 != null) g.startColumnIndex = c0;
+  if (c1 != null) g.endColumnIndex = c1;
+  return g;
+}
+
+/** 머리 줄 아래, 한 칸 너비 열 전체 */
+function colRange_(sheetId, col) {
+  return gridRange_(sheetId, 1, null, col, col + 1);
+}
+
+function rule_(range, condition, extra) {
+  var rule = { condition: condition, strict: true };
+  Object.keys(extra || {}).forEach(function (k) { rule[k] = extra[k]; });
+  return { setDataValidation: { range: range, rule: rule } };
+}
+
+function listOf_(values) {
+  return { type: 'ONE_OF_LIST', values: values.map(function (v) { return { userEnteredValue: String(v) }; }) };
+}
+
+function rangeList_(range) {
+  return { type: 'ONE_OF_RANGE', values: [{ userEnteredValue: range }] };
+}
+
+function custom_(formula) {
+  return { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: formula }] };
+}
+
+function listShape_(extra) {
+  extra = extra || {};
+  extra.showCustomUi = true;
+  return extra;
+}
+
+function format_(range, numberFormat) {
+  return { repeatCell: { range: range, cell: { userEnteredFormat: { numberFormat: numberFormat } }, fields: 'userEnteredFormat.numberFormat' } };
+}
+
+function commaListFormula_(cell, token) {
+  return '=REGEXMATCH(' + cell + '&"", "^(' + token + '(, ?' + token + ')*)?$")';
+}
+
+function protect_(range, description, warningOnly, owner) {
+  var pr = { range: range, description: description, warningOnly: warningOnly };
+  if (!warningOnly) pr.editors = { users: [owner] };
+  return { addProtectedRange: { protectedRange: pr } };
+}
+
+function setupRequests(sheetIds, ownerEmail) {
+  var R = [];
+  var tx = sheetIds[TABS.txns], bd = sheetIds[TABS.budgets], st = sheetIds[TABS.settings], inf = sheetIds[TABS.info];
+  var TEXT = { type: 'TEXT' }, NUM = { type: 'NUMBER', pattern: '#,##0' }, DATE = { type: 'DATE', pattern: 'yyyy-mm-dd' };
+  var both = ['지출', '수입'];
+  var colorNames = CAT_COLORS.map(function (c) { return c[0]; });
+
+  // 내역 — 드롭다운
+  R.push(rule_(colRange_(tx, 1), listOf_(both), listShape_()));
+  R.push(rule_(colRange_(tx, 2), rangeList_(CAT_LIST_RANGE), listShape_()));
+  R.push(rule_(colRange_(tx, 3), rangeList_(PAY_LIST_RANGE), listShape_()));
+  // 내역 — 입력 검사·체크박스
+  R.push(rule_(colRange_(tx, 0), { type: 'DATE_IS_VALID' }, { inputMessage: '날짜만 넣을 수 있어요 (예: 2026-11-16)' }));
+  R.push(rule_(colRange_(tx, 4), custom_('=AND(ISNUMBER(E2), E2>=1, E2=INT(E2))'), { inputMessage: '1원 이상의 정수만' }));
+  R.push({ setDataValidation: { range: colRange_(tx, 6), rule: { condition: { type: 'BOOLEAN' } } } });
+  // 내역 — 글자·날짜·금액 서식 (메모 "1/3"·할부 "1/3"이 날짜로 바뀌지 않게 글자 형식)
+  [5, 7, 8, 9, 10].forEach(function (c) { R.push(format_(colRange_(tx, c), TEXT)); });
+  R.push(format_(colRange_(tx, 0), DATE));
+  R.push(format_(colRange_(tx, 4), NUM));
+  // 예산 — 금액 서식
+  R.push(format_(gridRange_(bd, 1, null, 2, 14), NUM));
+
+  // 설정 — 드롭다운 (카테고리 B·D·E, 결제 수단 H, 자동 기록 M·N·O·Q·R, 켜짐 K)
+  R.push(rule_(colRange_(st, 1), listOf_(both), listShape_()));
+  R.push(rule_(colRange_(st, 3), listOf_(ICON_LABELS), listShape_()));
+  R.push(rule_(colRange_(st, 4), listOf_(colorNames), listShape_()));
+  R.push(rule_(colRange_(st, 7), listOf_(PAY_KINDS), listShape_()));
+  R.push({ setDataValidation: { range: colRange_(st, 10), rule: { condition: { type: 'BOOLEAN' } } } });
+  R.push(rule_(colRange_(st, 12), listOf_(both), listShape_()));
+  R.push(rule_(colRange_(st, 13), rangeList_(CAT_LIST_RANGE), listShape_()));
+  R.push(rule_(colRange_(st, 14), rangeList_(PAY_LIST_RANGE), listShape_()));
+  R.push(rule_(colRange_(st, 16), listOf_(REPEATS), listShape_()));
+  R.push(rule_(colRange_(st, 17), listOf_(['1', '2', '3', '4']), listShape_()));
+  // 설정 — 쉼표 칸: 글자 형식 + 쉼표 사이 값 하나하나 검사
+  [[18, 'S2', WEEKDAY_TOKEN_, '월~일을 쉼표로 (예: 월, 목)'],
+    [19, 'T2', DAY_TOKEN_, '1~28 또는 말일을 쉼표로 (예: 10, 말일)'],
+    [20, 'U2', MONTH_TOKEN_, '1~12를 쉼표로 (예: 3, 9)']].forEach(function (c) {
+    R.push(format_(colRange_(st, c[0]), TEXT));
+    R.push(rule_(colRange_(st, c[0]), custom_(commaListFormula_(c[1], c[2])), { inputMessage: c[3] }));
+  });
+  R.push(format_(colRange_(st, 11), TEXT)); // 메모
+  R.push(format_(colRange_(st, 25), DATE)); // 만든 날
+  ruleEndColumnRequests(st).forEach(function (q) { R.push(q); }); // V 끝 날짜 (#79)
+
+  // 보호 — 보는 탭 엄격, 앱이 관리하는 칸 경고, 머리 줄 엄격
+  [TABS.month, TABS.yearly].forEach(function (t) {
+    R.push(protect_(gridRange_(sheetIds[t]), '보는 탭 — 앱이 계산해요 (엄격)', false, ownerEmail));
+  });
+  R.push(protect_(gridRange_(tx, null, null, 7, 11), '앱이 관리하는 칸 (경고)', true));
+  R.push(protect_(gridRange_(bd, null, null, 14, 16), '자동 계산 칸 (경고)', true));
+  R.push(protect_(gridRange_(st, null, null, 22, 26), '앱이 관리하는 칸 (경고)', true));
+  R.push(protect_(gridRange_(inf), '앱이 쓰는 탭 (경고)', true));
+  [tx, bd, st].forEach(function (s) {
+    R.push(protect_(gridRange_(s, 0, 1), '머리 줄 (엄격)', false, ownerEmail));
+  });
+  return R;
+}
+
+function initialValues(name, ownerEmail, today) {
+  var cats = defaultCategories().map(categoryToRow);
+  return [
+    { range: "'" + TABS.txns + "'!A1:K1", values: [TXN_HEAD] },
+    { range: "'" + TABS.budgets + "'!A1:P1", values: [BUDGET_HEAD] },
+    { range: "'" + TABS.settings + "'!A1:E1", values: [CAT_HEAD] },
+    { range: "'" + TABS.settings + "'!G1:I1", values: [PAY_HEAD] },
+    { range: "'" + TABS.settings + "'!K1:Z1", values: [RULE_HEAD] },
+    { range: "'" + TABS.settings + "'!A2:E" + (cats.length + 1), values: cats },
+    { range: "'" + TABS.info + "'!A1:B6", values: [['키', '값'], ['버전', SCHEMA_VERSION], ['가계부 이름', name], ['소유자', ownerEmail],
+      ['만든 날', toSerial(today)], ['보는 탭 카테고리', '']] },
+    { range: "'" + TABS.info + "'!D1:G1", values: [LOG_HEAD] },
+    { range: "'" + TABS.info + "'!I1:L1", values: [INST_HEAD] },
+  ];
+}
+
+// ---- 보는 탭 (이번 달·월별 결산) 수식 ----
+var M1_ = '(EOMONTH(TODAY(),-1)+1)';
+var M2_ = 'EOMONTH(TODAY(),0)';
+var CELL_COLS_ = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'];
+
+function ledger_(col) {
+  return "'" + TABS.txns + "'!$" + col + ':$' + col;
+}
+
+/** 사람이 입력한 것처럼 해석되지 않게 이름 앞의 = + - @ 를 막는다 (USER_ENTERED로 쓰기 때문) */
+function labelCell_(name) {
+  return /^[=+\-@]/.test(String(name)) ? "'" + name : name;
+}
+
+/** 내역 합계 식. filters: [[열, 조건식], ...] 은 SUMIFS 조건쌍, from·to 는 날짜 식 */
+function sumLedger_(filters, from, to) {
+  var parts = [ledger_('E')];
+  filters.forEach(function (f) { parts.push(ledger_(f[0]), f[1]); });
+  parts.push(ledger_('G'), '"<>TRUE"', ledger_('A'), '">="&' + from, ledger_('A'), '"<="&' + to);
+  return '=SUMIFS(' + parts.join(',') + ')';
+}
+
+/** 이번 달 탭의 줄 위치 (1부터). 서식 요청에도 쓴다 */
+function monthLayout_(nCats, nPays) {
+  var first = 4, sum = first + nCats, ratio = sum + 1, payHead = ratio + 2;
+  var payFirst = payHead + 1, income = payFirst + nPays + 1, bigHead = income + 2;
+  return { first: first, last: first + nCats - 1, sum: sum, ratio: ratio, payHead: payHead, payFirst: payFirst,
+    payLast: payFirst + nPays - 1, bigHead: bigHead, big: bigHead + 1, income: income };
+}
+
+function monthTabValues(expenseCats, payNames) {
+  var n = expenseCats.length, L = monthLayout_(n, payNames.length), rows = [];
+  rows.push(['=TEXT(TODAY(),"yyyy년 m월")'], [], ['카테고리', '예산', '사용', '남음', '사용률']);
+  expenseCats.forEach(function (c, i) {
+    var r = L.first + i;
+    rows.push([labelCell_(c),
+      "=SUMIFS(INDEX('" + TABS.budgets + "'!$C:$N,0,MONTH(TODAY())),'" + TABS.budgets + "'!$A:$A,YEAR(TODAY()),'" + TABS.budgets + "'!$B:$B,$A" + r + ')',
+      sumLedger_([['C', '$A' + r], ['B', '"지출"']], M1_, M2_),
+      '=B' + r + '-C' + r,
+      '=IF(B' + r + '=0,"",C' + r + '/B' + r + ')']);
+  });
+  var s = L.sum;
+  function total(col) { return n ? '=SUM(' + col + L.first + ':' + col + L.last + ')' : 0; }
+  rows.push(['합계', total('B'), total('C'), total('D'), '=IF(B' + s + '=0,"",C' + s + '/B' + s + ')']);
+  rows.push(['남은 비율', '=IF(B' + s + '=0,"",D' + s + '/B' + s + ')']);
+  rows.push([], ['결제 수단별']);
+  payNames.forEach(function (p, i) {
+    rows.push([labelCell_(p), sumLedger_([['D', '$A' + (L.payFirst + i)], ['B', '"지출"']], M1_, M2_)]);
+  });
+  rows.push([], ['수입', sumLedger_([['B', '"수입"']], M1_, M2_)]);
+  rows.push([], ['큰 지출 5건']);
+  function col(c) { return "'" + TABS.txns + "'!" + c + '2:' + c; }
+  rows.push(['=IFERROR(SORTN(FILTER({TEXT(' + col('A') + ',"m/d"),' + col('C') + ',' + col('F') + ',' + col('E') + '},' +
+    '(' + col('A') + '>=' + M1_ + ')*(' + col('A') + '<=' + M2_ + ')*(' + col('B') + '="지출")*(' + col('G') + '<>TRUE)' +
+    '),5,0,4,FALSE),"")']);
+  return rows;
+}
+
+var MONTH_HEADS_ = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월', '연 합계'];
+
+function monthStart_(m) { return 'DATE(YEAR(TODAY()),' + m + ',1)'; }
+
+function yearlyTabValues(expenseCats, payNames) {
+  var rows = [['=YEAR(TODAY())&"년 월별 결산"']];
+  function head(label) { rows.push([], [label].concat(MONTH_HEADS_)); }
+  function line(label, fn) {
+    var r = rows.length + 1, row = [label];
+    for (var m = 1; m <= 12; m++) row.push(fn(m, CELL_COLS_[m], r));
+    row.push('=SUM(B' + r + ':M' + r + ')');
+    rows.push(row);
+  }
+  function use(extra) {
+    return function (m) {
+      return sumLedger_(extra, monthStart_(m), 'EOMONTH(' + monthStart_(m) + ',0)');
+    };
+  }
+  var bd = "'" + TABS.budgets + "'!";
+  var n = expenseCats.length;
+  // (a) 카테고리별 사용
+  head('카테고리별 사용');
+  var aFirst = rows.length + 1;
+  expenseCats.forEach(function (c, i) {
+    var r = aFirst + i;
+    line(labelCell_(c), use([['C', '$A' + r], ['B', '"지출"']]));
+  });
+  // (b) 예산 대비 남음
+  head('예산 대비 남음');
+  expenseCats.forEach(function (c, i) {
+    var r = rows.length + 1;
+    line(labelCell_(c), function (m, col) {
+      var bcol = CELL_COLS_[m + 1];
+      return '=SUMIFS(' + bd + '$' + bcol + ':$' + bcol + ',' + bd + '$A:$A,YEAR(TODAY()),' + bd + '$B:$B,$A' + r + ')-' + col + (aFirst + i);
+    });
+  });
+  // (c) 한 달 살림
+  head('한 달 살림');
+  var cRow = rows.length + 1;
+  line('수입', use([['B', '"수입"']]));
+  line('지출', function (m, col) { return n ? '=SUM(' + col + aFirst + ':' + col + (aFirst + n - 1) + ')' : 0; });
+  line('수입−지출', function (m, col) { return '=' + col + cRow + '-' + col + (cRow + 1); });
+  line('예산', function (m) {
+    var bcol = CELL_COLS_[m + 1];
+    return '=SUMIFS(' + bd + '$' + bcol + ':$' + bcol + ',' + bd + '$A:$A,YEAR(TODAY()))';
+  });
+  // (d) 결제 수단별 지출
+  head('결제 수단별 지출');
+  var dFirst = rows.length + 1;
+  payNames.forEach(function (p, i) {
+    line(labelCell_(p), use([['D', '$A' + (dFirst + i)], ['B', '"지출"']]));
+  });
+  return rows;
+}
+
+/** 예산 탭 한 줄의 [O 연 합계, P 최근 3개월 평균 사용] 수식 */
+function budgetFormulas(rowNumber) {
+  var r = rowNumber;
+  return ['=SUM(C' + r + ':N' + r + ')',
+    '=ROUND(SUMIFS(' + ledger_('E') + ',' + ledger_('C') + ',$B' + r + ',' + ledger_('B') + ',"지출",' + ledger_('G') + ',"<>TRUE",' +
+    ledger_('A') + ',">="&(EOMONTH(TODAY(),-4)+1),' + ledger_('A') + ',"<="&EOMONTH(TODAY(),-1))/3,0)'];
+}
+
+/**
+ * 설정 V열(자동 기록 끝 날짜, #79): 날짜 서식 + "날짜 또는 빈칸" 검사(엄격 아님 — 옛 횟수 숫자도 막지 않는다, 입력 안내만).
+ * 새 가계부(buildSetupRequests)와 옛 가계부 옮기기(Store migrateRuleEnd_)가 같이 쓴다
+ */
+function ruleEndColumnRequests(settingsSheetId) {
+  var range = colRange_(settingsSheetId, 21);
+  return [
+    format_(range, { type: 'DATE', pattern: 'yyyy-mm-dd' }),
+    { setDataValidation: { range: range, rule: { condition: { type: 'DATE_IS_VALID' }, strict: false,
+      inputMessage: '이 날짜까지 기록해요 (예: 2027-04-30). 비우면 계속' } } },
+  ];
 }
 
 ;
@@ -1543,6 +1821,378 @@ var Rest = {
 };
 
 ;
+// 리포트 탭('이번 달'·'월별 결산')을 수식으로 만들고 단계 3 합의 시안 모양으로 꾸민다 (설계 §5-4, 작업 22·22b).
+// 계산은 지금 앱의 monthTabValues·yearlyTabValues(src/SheetSetup.js)와 같다. 다른 점은 목록이다:
+// 카테고리·결제 수단 이름을 박아 넣지 않고 설정 탭에서 읽으므로, 목록이 바뀌어도 다시 쓸 필요가 없다.
+// 앱이 다시 쓰는 때는 이 모양이 바뀌어 REPORT_VERSION 을 올렸을 때뿐이다 (주인 기기가 열 때 한 번, Bridge).
+// 내역 합계는 src 의 sumLedger_·M1_·M2_ 를 그대로 써서 만든다 (같은 조건: 취소 제외 · 기간 · 유형).
+//
+// 배치 (작업 22b, prototype/sheet-this-month.html · sheet-yearly.html):
+//   이번 달  1줄 제목 · 기준 날짜 / 2줄 설명 / 4~6줄 요약 칸(예산·사용·남음 | 남은 비율) /
+//            B8 기준 칸 = 카테고리별 표 + 큰 지출 5건, G10 = 사용률 막대, I8 기준 칸 = 결제 수단별 + 수입
+//   월별 결산 1줄 제목 · 기준 날짜 / 2줄 설명 / B4 기준 칸 = 네 구역, P6 = 카테고리 12달 흐름
+// 꾸밈: 위치가 고정된 줄(제목·요약·첫 구역 제목·첫 머리줄)은 일반 서식, 목록 길이로 움직이는 줄(구역 제목·머리줄·합계)은
+// 그 줄 첫 칸 글자로 판정하는 조건부 서식 (구글 시트 조건부 서식은 굵게·글자색·배경만 된다 — 크기·테두리는 고정 줄만).
+// 하루 여유(남은 날로 나눈 값)는 넣지 않는다 (#53 — 시안에는 있지만 그 뒤 결정으로 빠짐).
+var ReportTabs = {
+  REPORT_VERSION: 'c2-2',
+  INFO_KEY: '리포트 버전',
+  // 구역 제목 (시안 글자). 조건부 서식이 이 글자로 굵게 만든다
+  SECTION_TITLES: ['카테고리별', '이번 달 큰 지출 5건', '결제 수단별', '수입', '카테고리별 사용', '예산 대비 남음', '한 달 살림', '결제 수단별 지출'],
+  // 수식 안 이름. 칸 주소·함수 이름과 헷갈리지 않게 밑줄을 넣는다
+  V: { cats: 'cat_list', pays: 'pay_list', cat: 'cat_n', pay: 'pay_n', mon: 'm_i', row: 'r_i', x: 'x_v', y: 'y_v', all: 'all_v' },
+  // 목록이 비었을 때 FILTER 오류 대신 들어가는 자리표. 마지막에 이 줄을 걸러 낸다
+  NONE: '#없음#',
+  MONTH_HEADS: ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월', '연 합계'],
+  // 앱 숲 톤 토큰 값 (docs/design.md 토큰 표). 시트는 CSS 변수를 못 쓰므로 값을 그대로 쓴다
+  COLOR: {
+    soft: '#e3ebdb', soft2: '#eef3ea', note: '#eeeae3', ink: '#20352a', sub: '#7c8781', green: '#4a6e56',
+    primary: '#3d6a4f', line: '#ebe9e4', over: '#b5553a', overSoft: '#fbefe9',
+  },
+  FONT: 'Noto Sans KR',
+  LOCK_NOTE: "이 탭은 잠겨 있어요. 고칠 때는 '내역'·'예산' 탭에서",
+
+  str: function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; },
+  // sumLedger_ 는 칸 수식('=SUMIFS(…)')을 준다. 수식 안 조각으로 쓰려고 '=' 를 뗀다
+  ledger: function (filters, from, to) { return sumLedger_(filters, from, to).slice(1); },
+
+  /**
+   * 설정 탭 목록 (지금 viewCatNames_·viewPayNames_ 와 같은 순서): 순서 열로 오름차순, 같으면 시트 줄 순서. 숫자가 아닌 순서는 0.
+   * 이름은 앞뒤 공백을 뗀다(TRIM). 뗀 이름이 비지 않은 줄만, cond 가 있으면 그 조건도. 비었으면 {NONE} 한 칸
+   */
+  listExpr: function (orderCol, nameCol, cond) {
+    var st = "'" + TABS.settings + "'!";
+    var ord = st + orderCol + '2:' + orderCol + '200';
+    var name = 'ARRAYFORMULA(TRIM(' + st + nameCol + '2:' + nameCol + '200))';
+    var keep = (cond ? cond + ',' : '') + name + '<>""';
+    return 'IFERROR(INDEX(SORT(FILTER(HSTACK(ARRAYFORMULA(IF(ISNUMBER(' + ord + '),' + ord + ',0)),' + name + ',SEQUENCE(199)),' + keep + '),1,TRUE,3,TRUE),0,2),{' +
+      ReportTabs.str(ReportTabs.NONE) + '})';
+  },
+  catsExpr: function () { return ReportTabs.listExpr('A', 'C', "'" + TABS.settings + "'!B2:B200=\"지출\""); },
+  paysExpr: function () { return ReportTabs.listExpr('G', 'I', null); },
+
+  // LET(이름, 값, …, 결과). 마지막은 all_v 에서 NONE 줄을 빼고, VSTACK 이 짧은 줄을 채운 #N/A 를 빈칸으로
+  letOf: function (pairs, rows) {
+    var V = ReportTabs.V;
+    var parts = [];
+    pairs.forEach(function (p) { parts.push(p[0], p[1]); });
+    parts.push(V.all, 'VSTACK(' + rows.join(',') + ')');
+    parts.push('IFNA(FILTER(' + V.all + ',INDEX(' + V.all + ',0,1)<>' + ReportTabs.str(ReportTabs.NONE) + '),"")');
+    return '=LET(' + parts.join(',') + ')';
+  },
+  hstack: function (labels) { return 'HSTACK(' + labels.map(ReportTabs.str).join(',') + ')'; },
+  // SPARKLINE 막대 옵션 {"charttype","bar";"max",1;"color1",색}
+  barOpts: function (color) { return '{"charttype","bar";"max",1;"color1",' + color + '}'; },
+  asOf: function () { return '=TEXT(TODAY(),"yyyy년 m월 d일")&" 기준 · 자동 계산"'; },
+
+  /** '이번 달' B8: 카테고리별(머리 · 카테고리 줄들 · 합계) / 큰 지출 5건(머리 · 5줄). 폭 5칸(B:F) */
+  monthCell: function () {
+    var V = ReportTabs.V, s = ReportTabs.str, led = ReportTabs.ledger;
+    var bd = "'" + TABS.budgets + "'!";
+    var budget = 'SUMIFS(INDEX(' + bd + '$C:$N,0,MONTH(TODAY())),' + bd + '$A:$A,YEAR(TODAY()),' + bd + '$B:$B,' + V.cat + ')';
+    var two = 'LAMBDA(' + V.x + ',' + V.y + ',';
+    var pairs = [
+      [V.cats, ReportTabs.catsExpr()],
+      ['bud_v', 'MAP(' + V.cats + ',LAMBDA(' + V.cat + ',' + budget + '))'],
+      ['use_v', 'MAP(' + V.cats + ',LAMBDA(' + V.cat + ',' + led([['C', V.cat], ['B', '"지출"']], M1_, M2_) + '))'],
+      ['rem_v', 'MAP(bud_v,use_v,' + two + V.x + '-' + V.y + '))'],
+      ['rate_v', 'MAP(bud_v,use_v,' + two + 'IF(' + V.x + '=0,"",' + V.y + '/' + V.x + ')))'],
+      ['tb_v', 'SUM(bud_v)'], ['tu_v', 'SUM(use_v)'], ['tr_v', 'SUM(rem_v)'],
+    ];
+    // 큰 지출 5건은 지금 식 그대로 (src monthTabValues 의 마지막 줄): 날짜(m/d) · 카테고리 · 메모 · 금액
+    var now = monthTabValues([], []);
+    var big = now[now.length - 1][0].slice(1);
+    var rows = [
+      s('카테고리별'),
+      ReportTabs.hstack(['카테고리', '예산', '사용', '남음', '사용률']),
+      'HSTACK(' + V.cats + ',bud_v,use_v,rem_v,rate_v)',
+      'HSTACK(' + s('합계') + ',tb_v,tu_v,tr_v,IF(tb_v=0,"",tu_v/tb_v))',
+      '""',
+      s('이번 달 큰 지출 5건'),
+      ReportTabs.hstack(['날짜', '카테고리', '메모', '금액']),
+      big,
+    ];
+    return ReportTabs.letOf(pairs, rows);
+  },
+
+  /** '이번 달' I8: 결제 수단별(머리 · 결제 수단 줄들) / 수입(합계 한 줄). 폭 2칸(I:J) */
+  monthPayCell: function () {
+    var V = ReportTabs.V, s = ReportTabs.str, led = ReportTabs.ledger;
+    var pairs = [
+      [V.pays, ReportTabs.paysExpr()],
+      ['pay_use', 'MAP(' + V.pays + ',LAMBDA(' + V.pay + ',' + led([['D', V.pay], ['B', '"지출"']], M1_, M2_) + '))'],
+    ];
+    var rows = [
+      s('결제 수단별'),
+      ReportTabs.hstack(['결제 수단', '금액']),
+      'HSTACK(' + V.pays + ',pay_use)',
+      '""',
+      s('수입'),
+      'HSTACK(' + s('합계') + ',' + led([['B', '"수입"']], M1_, M2_) + ')',
+    ];
+    return ReportTabs.letOf(pairs, rows);
+  },
+
+  /** '이번 달' G10: 카테고리 줄 ~ 합계 줄의 사용률(F) 막대. 합계 줄은 B열에서 뒤에서 찾는다(카테고리 이름이 '합계'여도 맞게). 넘으면 초과 색 */
+  monthBarCell: function () {
+    var C = ReportTabs.COLOR, x = ReportTabs.V.x;
+    return '=IFERROR(MAP(F10:INDEX(F10:F,XMATCH("합계",B10:B,0,-1)),LAMBDA(' + x + ',IF(ISNUMBER(' + x + '),SPARKLINE(MIN(' + x + ',1),' +
+      ReportTabs.barOpts('IF(' + x + '>1,"' + C.over + '","' + C.primary + '")') + '),""))),"")';
+  },
+
+  /** '월별 결산' B4: 카테고리별 사용 / 예산 대비 남음 / 한 달 살림(수입·지출·수입−지출·예산) / 결제 수단별 지출. 줄 끝은 연 합계. 폭 14칸(B:O) */
+  yearlyCell: function () {
+    var V = ReportTabs.V, s = ReportTabs.str, led = ReportTabs.ledger;
+    var bd = "'" + TABS.budgets + "'!";
+    var ms = 'DATE(YEAR(TODAY()),' + V.mon + ',1)', me = 'EOMONTH(' + ms + ',0)';
+    var catAt = 'INDEX(' + V.cats + ',' + V.row + ')', payAt = 'INDEX(' + V.pays + ',' + V.row + ')';
+    var grid = function (list, body) { return 'MAKEARRAY(ROWS(' + list + '),12,LAMBDA(' + V.row + ',' + V.mon + ',' + body + '))'; };
+    var perMonth = function (body) { return 'MAP(mon_v,LAMBDA(' + V.mon + ',' + body + '))'; };
+    var rowSum = function (m) { return 'BYROW(' + m + ',LAMBDA(' + V.x + ',SUM(' + V.x + ')))'; };
+    var budgetOf = function (cond) { return 'SUMIFS(INDEX(' + bd + '$C:$N,0,' + V.mon + '),' + bd + '$A:$A,YEAR(TODAY())' + (cond ? ',' + bd + '$B:$B,' + cond : '') + ')'; };
+    var pairs = [
+      [V.cats, ReportTabs.catsExpr()],
+      [V.pays, ReportTabs.paysExpr()],
+      ['mon_v', 'SEQUENCE(1,12)'],
+      ['cat_use', grid(V.cats, led([['C', catAt], ['B', '"지출"']], ms, me))],
+      ['cat_left', grid(V.cats, budgetOf(catAt) + '-INDEX(cat_use,' + V.row + ',' + V.mon + ')')],
+      ['inc_v', perMonth(led([['B', '"수입"']], ms, me))],
+      ['out_v', 'BYCOL(cat_use,LAMBDA(' + V.x + ',SUM(' + V.x + ')))'],
+      ['net_v', 'MAP(inc_v,out_v,LAMBDA(' + V.x + ',' + V.y + ',' + V.x + '-' + V.y + '))'],
+      ['bud_v', perMonth(budgetOf(null))],
+      ['pay_use', grid(V.pays, led([['D', payAt], ['B', '"지출"']], ms, me))],
+    ];
+    var head = function (t) { return ReportTabs.hstack([t].concat(ReportTabs.MONTH_HEADS)); };
+    var line = function (label, arr) { return 'HSTACK(' + s(label) + ',' + arr + ',SUM(' + arr + '))'; };
+    var rows = [
+      s('카테고리별 사용'), head('카테고리'),
+      'HSTACK(' + V.cats + ',cat_use,' + rowSum('cat_use') + ')',
+      '""', s('예산 대비 남음'), head('카테고리'),
+      'HSTACK(' + V.cats + ',cat_left,' + rowSum('cat_left') + ')',
+      '""', s('한 달 살림'), head('항목'),
+      line('수입', 'inc_v'), line('지출', 'out_v'), line('수입−지출', 'net_v'), line('예산', 'bud_v'),
+      '""', s('결제 수단별 지출'), head('결제 수단'),
+      'HSTACK(' + V.pays + ',pay_use,' + rowSum('pay_use') + ')',
+    ];
+    return ReportTabs.letOf(pairs, rows);
+  },
+
+  /** '월별 결산' P6: 카테고리별 사용 줄마다 12달 흐름(SPARKLINE column). 카테고리 줄 수 = '예산 대비 남음' 제목 위치 − 2 */
+  yearlyFlowCell: function () {
+    var x = ReportTabs.V.x;
+    return '=IFERROR(LET(cnt_n,XMATCH("예산 대비 남음",B6:B)-2,IF(cnt_n<1,"",BYROW(C6:INDEX(N6:N,cnt_n),LAMBDA(' + x + ',SPARKLINE(' + x +
+      ',{"charttype","column";"color","' + ReportTabs.COLOR.primary + '"}))))),"")';
+  },
+
+  // ---- 배치·꾸밈 명세 (순수). spec(kind) = { cells, formats, merges, cols, rows, rules } ----
+  // cells: [{a1, f(수식)} | {a1, v(글자)}]. formats: [{r: 'A1' 또는 'A1:B2' 또는 'C:E'(9줄부터 끝까지는 'C9:E'), …서식}].
+  // 서식 키: bg, fg, bold, size, font, align, valign, nf(숫자 서식 패턴), nfType, bottom(아래 선 색). cols: {A: 픽셀}, rows: {줄: 픽셀}
+  // rules: [{r: 'B8:G', f: '=…', bold, fg, bg}] — r 은 줄 끝 없이 (목록이 길어져도 맞게)
+  spec: function (kind) { return kind === 'month' ? ReportTabs.monthSpec() : ReportTabs.yearlySpec(); },
+
+  monthSpec: function () {
+    var C = ReportTabs.COLOR;
+    var cells = [
+      { a1: 'B1', f: '=MONTH(TODAY())&"월 가계부"' },
+      { a1: 'I1', f: ReportTabs.asOf() },
+      { a1: 'B2', f: '=TEXT(EOMONTH(TODAY(),-1)+1,"yyyy-mm-dd")&" ~ "&TEXT(EOMONTH(TODAY(),0),"yyyy-mm-dd")&" · ' + ReportTabs.LOCK_NOTE + '"' },
+      { a1: 'B4', v: '이번 달 예산' }, { a1: 'D4', v: '사용' }, { a1: 'F4', v: '남음' }, { a1: 'I4', v: '남은 비율' },
+      // 요약 숫자: 왼쪽 표의 합계 줄(뒤에서 찾음). 남은 비율 = 남음 ÷ 예산 (지금 앱과 같은 식)
+      { a1: 'B5', f: '=IFERROR(XLOOKUP("합계",B10:B,C10:C,0,0,-1),0)' },
+      { a1: 'D5', f: '=IFERROR(XLOOKUP("합계",B10:B,D10:D,0,0,-1),0)' },
+      { a1: 'F5', f: '=IFERROR(XLOOKUP("합계",B10:B,E10:E,0,0,-1),0)' },
+      { a1: 'I5', f: '=IF(N(B5)=0,"",F5/B5)' },
+      { a1: 'B6', v: '카테고리 예산의 합' }, { a1: 'D6', v: '이번 달 지출' }, { a1: 'F6', v: '예산 − 사용' },
+      { a1: 'I6', f: '=IF(ISNUMBER(I5),SPARKLINE(MAX(0,MIN(I5,1)),' + ReportTabs.barOpts('"' + C.primary + '"') + '),"")' },
+      { a1: 'B8', f: ReportTabs.monthCell() },
+      { a1: 'G10', f: ReportTabs.monthBarCell() },
+      { a1: 'I8', f: ReportTabs.monthPayCell() },
+    ];
+    var won = '#,##0"원"';
+    var formats = [
+      { r: '', font: ReportTabs.FONT, size: 10, fg: C.ink, valign: 'MIDDLE' }, // 탭 전체
+      // 숫자 열 (9줄부터 끝까지): 예산·사용·남음 / 사용률 / 결제 수단·수입 금액
+      { r: 'C9:E', nf: '#,##0' }, { r: 'F9:F', nf: '0%', nfType: 'PERCENT' }, { r: 'J9:J', nf: '#,##0' },
+      { r: 'E9:F', align: 'RIGHT' }, { r: 'J9:J', align: 'RIGHT' },
+      { r: 'B1', size: 18, bold: true },
+      { r: 'I1:J1', fg: C.sub, align: 'RIGHT' },
+      { r: 'B2', fg: C.sub },
+      // 요약 칸
+      { r: 'B4:G6', bg: C.soft }, { r: 'I4:J6', bg: C.soft },
+      { r: 'B4:J4', fg: C.green, valign: 'BOTTOM' },
+      { r: 'B5', size: 18, bold: true, nf: won, align: 'LEFT' }, { r: 'D5', size: 18, bold: true, nf: won, align: 'LEFT' },
+      { r: 'F5', size: 18, bold: true, nf: won, align: 'LEFT' }, { r: 'I5', size: 18, bold: true, nf: '0%', nfType: 'PERCENT', align: 'LEFT' },
+      { r: 'B6:J6', size: 9, fg: C.green, valign: 'TOP' },
+      // 첫 구역 제목 · 첫 머리줄 (자리가 고정)
+      { r: 'B8', size: 12, bold: true, valign: 'BOTTOM' }, { r: 'I8', size: 12, bold: true, valign: 'BOTTOM' },
+      { r: 'B9:G9', bg: C.soft2, fg: C.green, bottom: C.line }, { r: 'I9:J9', bg: C.soft2, fg: C.green, bottom: C.line },
+      { r: 'C9:D9', align: 'RIGHT' },
+    ];
+    var merges = ['I1:J1', 'B4:C4', 'D4:E4', 'F4:G4', 'I4:J4', 'B5:C5', 'D5:E5', 'F5:G5', 'I5:J5', 'B6:C6', 'D6:E6', 'F6:G6', 'I6:J6'];
+    var cols = { A: 24, B: 150, C: 110, D: 110, E: 110, F: 76, G: 170, H: 28, I: 190, J: 130, K: 24 };
+    var rows = { 1: 44, 4: 26, 5: 40, 6: 24, 8: 34 };
+    // 먼저 맞는 규칙 하나만 적용되므로, 합계 줄의 음수 칸 규칙을 일반 합계 규칙보다 앞에 둔다
+    var rules = [
+      { r: 'E8:E', f: '=AND($B8="합계",ISNUMBER($E8),$E8<0)', bold: true, fg: C.over, bg: C.note },
+      { r: 'B8:G', f: '=$B8="합계"', bold: true, bg: C.note },
+      { r: 'B8:G', f: '=$B8="날짜"', fg: C.green, bg: C.soft2 },
+      { r: 'B8:G', f: '=OR($B8="카테고리별",$B8="이번 달 큰 지출 5건")', bold: true },
+      { r: 'E8:E', f: '=AND(ISNUMBER($E8),$E8<0)', bold: true, fg: C.over },
+      { r: 'I8:J', f: '=$I8="합계"', bold: true, bg: C.note },
+      { r: 'I8:J', f: '=OR($I8="결제 수단별",$I8="수입")', bold: true },
+      // 요약 칸 '남음'(F5, 고정 칸)이 음수면 초과 색. 배경은 요약 칸 --soft 그대로
+      { r: 'F5', f: '=AND(ISNUMBER($F5),$F5<0)', fg: C.over, bg: C.soft },
+    ];
+    return { cells: cells, formats: formats, merges: merges, cols: cols, rows: rows, rules: rules };
+  },
+
+  yearlySpec: function () {
+    var C = ReportTabs.COLOR;
+    var cells = [
+      { a1: 'B1', f: '=YEAR(TODAY())&"년 월별 결산"' },
+      { a1: 'L1', f: ReportTabs.asOf() },
+      { a1: 'B2', f: '="단위: 원 · "&MONTH(TODAY())&"월은 "&DAY(TODAY())&"일까지(진행 중) · ' + ReportTabs.LOCK_NOTE + '"' },
+      { a1: 'B4', f: ReportTabs.yearlyCell() },
+      { a1: 'P5', v: '흐름' },
+      { a1: 'P6', f: ReportTabs.yearlyFlowCell() },
+    ];
+    var head = '=OR($B4="카테고리",$B4="항목",$B4="결제 수단")';
+    var formats = [
+      { r: '', font: ReportTabs.FONT, size: 10, fg: C.ink, valign: 'MIDDLE' },
+      { r: 'C5:O', nf: '#,##0' }, { r: 'C5:O', align: 'RIGHT' },
+      { r: 'B1', size: 18, bold: true },
+      { r: 'L1:P1', fg: C.sub, align: 'RIGHT' },
+      { r: 'B2', fg: C.sub },
+      { r: 'B4', size: 12, bold: true, valign: 'BOTTOM' },
+      { r: 'B5:P5', bg: C.soft2, fg: C.green, bottom: C.line },
+    ];
+    var cols = { A: 20, B: 130, O: 100, P: 104, Q: 20 };
+    'CDEFGHIJKLMN'.split('').forEach(function (l) { cols[l] = 78; });
+    var rows = { 1: 44, 4: 34 };
+    var rules = [
+      { r: 'C4:O', f: '=AND($B4="수입−지출",ISNUMBER(C4),C4<0)', bold: true, fg: C.over, bg: C.note }, // 적자 달 (일반 합계 규칙보다 먼저)
+      { r: 'B4:P', f: '=$B4="수입−지출"', bold: true, bg: C.note },
+      // 머리줄의 이번 달 칸은 숲 색 굵게 (이 규칙이 아래 머리줄 규칙보다 먼저 — 먼저 맞는 규칙이 이긴다)
+      { r: 'C4:N', f: '=AND(OR($B4="카테고리",$B4="항목",$B4="결제 수단"),COLUMN(C4)-2=MONTH(TODAY()))', bold: true, fg: C.primary, bg: C.soft2 },
+      { r: 'B4:P', f: head, fg: C.green, bg: C.soft2 },
+      { r: 'B4:P', f: '=OR($B4="카테고리별 사용",$B4="예산 대비 남음",$B4="한 달 살림",$B4="결제 수단별 지출")', bold: true },
+      { r: 'C4:O', f: '=AND(ISNUMBER(C4),C4<0)', bold: true, fg: C.over, bg: C.overSoft },
+    ];
+    return { cells: cells, formats: formats, merges: ['L1:P1'], cols: cols, rows: rows, rules: rules };
+  },
+
+  // ---- 명세 → Sheets batchUpdate 요청 ----
+  rgb: function (hex) {
+    return { red: parseInt(hex.slice(1, 3), 16) / 255, green: parseInt(hex.slice(3, 5), 16) / 255, blue: parseInt(hex.slice(5, 7), 16) / 255 };
+  },
+  colIndex: function (l) { return l.charCodeAt(0) - 65; },
+  /** 'B4' · 'B4:G6' · 'C9:E'(줄 끝 없음) · ''(탭 전체) → GridRange */
+  grid: function (sheetId, a1) {
+    var g = { sheetId: sheetId };
+    if (!a1) return g;
+    var parts = a1.split(':');
+    // 열은 한 글자(A~Z)만 받는다 (이 탭들은 Q열까지만 쓴다)
+    var p = function (s) {
+      var m = s.match(/^([A-Z])(\d*)$/);
+      if (!m) throw new Error('ReportTabs.grid: 한 글자 열만 됩니다 ' + a1);
+      return { c: ReportTabs.colIndex(m[1]), r: m[2] ? Number(m[2]) - 1 : null }; };
+    var a = p(parts[0]), b = p(parts[1] || parts[0]);
+    if (a.r != null) g.startRowIndex = a.r;
+    if (b.r != null) g.endRowIndex = b.r + 1;
+    g.startColumnIndex = a.c;
+    g.endColumnIndex = b.c + 1;
+    return g;
+  },
+  /** 서식 한 개 → repeatCell. fields 는 준 항목만 (서로 덮어쓰지 않게) */
+  formatRequest: function (sheetId, f) {
+    var R = ReportTabs, u = {}, fields = [], tf = {};
+    if (f.bg) { u.backgroundColor = R.rgb(f.bg); fields.push('backgroundColor'); }
+    if (f.font) { tf.fontFamily = f.font; fields.push('textFormat.fontFamily'); }
+    if (f.size) { tf.fontSize = f.size; fields.push('textFormat.fontSize'); }
+    if (f.bold != null) { tf.bold = f.bold; fields.push('textFormat.bold'); }
+    if (f.fg) { tf.foregroundColor = R.rgb(f.fg); fields.push('textFormat.foregroundColor'); }
+    if (fields.some(function (x) { return x.indexOf('textFormat') === 0; })) u.textFormat = tf;
+    if (f.align) { u.horizontalAlignment = f.align; fields.push('horizontalAlignment'); }
+    if (f.valign) { u.verticalAlignment = f.valign; fields.push('verticalAlignment'); }
+    if (f.nf) { u.numberFormat = { type: f.nfType || 'NUMBER', pattern: f.nf }; fields.push('numberFormat'); }
+    if (f.bottom) { u.borders = { bottom: { style: 'SOLID', color: R.rgb(f.bottom) } }; fields.push('borders.bottom'); }
+    return { repeatCell: {
+      range: R.grid(sheetId, f.r), cell: { userEnteredFormat: u },
+      fields: fields.map(function (x) { return 'userEnteredFormat.' + x; }).join(','),
+    } };
+  },
+  dimRequest: function (sheetId, dim, index, px) {
+    return { updateDimensionProperties: { range: { sheetId: sheetId, dimension: dim, startIndex: index, endIndex: index + 1 }, properties: { pixelSize: px }, fields: 'pixelSize' } };
+  },
+
+  /**
+   * 리포트 탭 하나를 통째로 다시 쓰는 요청들 (kind = 'month' | 'yearly'). oldRules = 지금 그 탭의 조건부 서식 개수 (쓰기 직전에 읽은 값).
+   * 순서: 옛 조건부 서식 지우기(뒤에서부터) → 병합 풀기 → 값·서식 지우기(C12) → 기준 칸 → 서식 → 병합 → 열 너비·줄 높이 → 격자선 숨김 → 조건부 서식
+   */
+  tabRequests: function (sheetId, kind, oldRules) {
+    var R = ReportTabs, L = R.spec(kind), reqs = [];
+    for (var i = (oldRules || 0) - 1; i >= 0; i--) reqs.push({ deleteConditionalFormatRule: { sheetId: sheetId, index: i } });
+    reqs.push({ unmergeCells: { range: { sheetId: sheetId } } });
+    reqs.push({ updateCells: { range: { sheetId: sheetId }, fields: 'userEnteredValue,userEnteredFormat' } });
+    L.cells.forEach(function (c) {
+      var g = R.grid(sheetId, c.a1);
+      var v = c.f ? { formulaValue: c.f } : { stringValue: c.v };
+      reqs.push({ updateCells: { range: g, rows: [{ values: [{ userEnteredValue: v }] }], fields: 'userEnteredValue' } });
+    });
+    L.formats.forEach(function (f) { reqs.push(R.formatRequest(sheetId, f)); });
+    L.merges.forEach(function (m) { reqs.push({ mergeCells: { range: R.grid(sheetId, m), mergeType: 'MERGE_ALL' } }); });
+    Object.keys(L.cols).sort().forEach(function (l) { reqs.push(R.dimRequest(sheetId, 'COLUMNS', R.colIndex(l), L.cols[l])); });
+    Object.keys(L.rows).forEach(function (n) { reqs.push(R.dimRequest(sheetId, 'ROWS', Number(n) - 1, L.rows[n])); });
+    reqs.push({ updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { hideGridlines: true } }, fields: 'gridProperties.hideGridlines' } });
+    L.rules.forEach(function (r, k) {
+      var fmt = {}, tf = {};
+      if (r.bg) fmt.backgroundColor = R.rgb(r.bg);
+      if (r.bold) tf.bold = true;
+      if (r.fg) tf.foregroundColor = R.rgb(r.fg);
+      if (r.bold || r.fg) fmt.textFormat = tf;
+      reqs.push({ addConditionalFormatRule: { index: k, rule: {
+        ranges: [R.grid(sheetId, r.r)],
+        booleanRule: { condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: r.f }] }, format: fmt },
+      } } });
+    });
+    return reqs;
+  },
+
+  // 데이터 탭 머리줄 (1줄). segs = 머리 글자가 있는 열 구간 [시작, 끝), managed = 앱이 관리하는 칸 열(머리 글자 --sub), widths = 열 너비(A부터)
+  DATA_HEADS: [
+    { tab: 'txns', segs: [[0, 11]], managed: [7, 8, 9, 10], widths: [96, 64, 110, 170, 96, 170, 48, 64, 96, 84, 220] },
+    { tab: 'budgets', segs: [[0, 16]], managed: [14, 15], widths: [64, 110, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 100, 150] },
+    { tab: 'settings', segs: [[0, 5], [6, 9], [10, 26]], managed: [22, 23, 24, 25],
+      widths: [48, 56, 110, 70, 70, 24, 48, 64, 170, 24, 50, 130, 56, 90, 150, 90, 64, 50, 70, 80, 70, 96, 50, 280, 84, 96] },
+    { tab: 'info', segs: [[0, 2], [3, 7], [8, 12]], managed: [], widths: null }, // 숨은 탭: 머리줄 서식·고정만
+  ],
+
+  /**
+   * 데이터 탭(내역·예산·설정·정보) 머리줄 꾸밈: 1줄 굵게·--soft-2 배경·아래 선, 앱이 관리하는 칸 머리 글자 --sub, 1줄 고정, 열 너비.
+   * 머리줄 글자·값·입력 검사는 건드리지 않는다 (서식 fields 만). ids = { 탭 이름: sheetId }
+   */
+  dataHeaderRequests: function (ids) {
+    var R = ReportTabs, C = R.COLOR, reqs = [];
+    R.DATA_HEADS.forEach(function (d) {
+      var sid = ids[TABS[d.tab]];
+      var row = function (c0, c1, f) {
+        var q = R.formatRequest(sid, f);
+        q.repeatCell.range = { sheetId: sid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: c0, endColumnIndex: c1 };
+        return q;
+      };
+      d.segs.forEach(function (s) { reqs.push(row(s[0], s[1], { bg: C.soft2, fg: C.ink, bold: true, bottom: C.primary, valign: 'MIDDLE' })); });
+      // 앱이 관리하는 칸: 붙은 열끼리 한 요청
+      var runs = [];
+      d.managed.forEach(function (c) { var last = runs[runs.length - 1]; if (last && last[1] === c) last[1] = c + 1; else runs.push([c, c + 1]); });
+      runs.forEach(function (r) { reqs.push(row(r[0], r[1], { fg: C.sub })); });
+      reqs.push({ updateSheetProperties: { properties: { sheetId: sid, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } });
+      (d.widths || []).forEach(function (px, c) { reqs.push(R.dimRequest(sid, 'COLUMNS', c, px)); });
+    });
+    return reqs;
+  },
+};
+
+;
 // 가계부 읽기 (REST). src/Store.js loadBook_ 을 옮긴 것 — 해석·바로잡기 코드는 줄 단위로 같게 둔다.
 // 나중에 src/ 원본이 없어지면 이 파일이 원본이다.
 // 차이: 잠금 없음 · 가계부 주인 판정은 인자(isOwner) · 보는 탭 다시 쓰기(syncViewTabs_)는 하지 않는다 (관문 2에서 수식화)
@@ -1581,7 +2231,8 @@ var BookStore = {
     function problem(tab, line, reason) { problems.push({ tab: tab, line: line, reason: reason }); }
     function fix(tab, a1, value) { fixes.push({ range: q(tab, a1), values: [[value]] }); }
     var kv = {};
-    vals(res, 5).forEach(function (row, i) { if (i > 0 && row[0] != null && row[0] !== '') kv[row[0]] = cell_(row, 1); });
+    var kvRow = {}; // 키 → 시트 줄 번호 (같은 키가 여러 줄이면 kv 처럼 마지막 줄)
+    vals(res, 5).forEach(function (row, i) { if (i > 0 && row[0] != null && row[0] !== '') { kv[row[0]] = cell_(row, 1); kvRow[row[0]] = i + 1; } });
     var info = {
       version: kv['버전'] === undefined ? '' : kv['버전'],
       name: str_(kv['가계부 이름']), owner: str_(kv['소유자']),
@@ -1589,6 +2240,9 @@ var BookStore = {
       viewCats: str_(kv['보는 탭 카테고리']),
       // 결제 수단 기준 줄이 없는 예전 가계부는 null
       viewPays: Object.prototype.hasOwnProperty.call(kv, '보는 탭 결제 수단') ? str_(kv['보는 탭 결제 수단']) : null,
+      // 리포트 탭 수식 버전 (작업 22). 다리가 주인 기기에서 ReportTabs.REPORT_VERSION 과 비교해 다르면 한 번 다시 쓴다
+      reportVersion: str_(kv[ReportTabs.INFO_KEY]),
+      _reportRow: kvRow[ReportTabs.INFO_KEY] || 0,
     };
 
     var categories = [];
@@ -1613,6 +2267,8 @@ var BookStore = {
 
     var txns = [];
     var seen = {};
+    var dupLines = [];
+    var autoFirst = {}; // 'A-' 번호 → 그 번호로 처음 읽은 줄의 A~I
     vals(res, 0).forEach(function (row, i) {
       var line = i + 2;
       var id = str_(cell_(row, 9));
@@ -1629,11 +2285,19 @@ var BookStore = {
         if (id !== '' && !seen[id]) seen[id] = true;
         return;
       }
+      var sig = JSON.stringify([0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (j) { var v = (row || [])[j]; return v == null ? '' : v; }));
+      // 자동 기록 번호가 겹침 (두 기기가 같은 순간 채움): 위 줄(읽을 수 있었던 첫 줄)과 A~I 가 똑같은 아래 줄만 비운다.
+      // 다르면 (사람이 복사해 고친 줄, 위 줄을 읽지 못한 경우 등) 일반 겹친 번호처럼 새 번호를 받아 남는다
+      if (id !== '' && seen[id] && id.indexOf('A-') === 0 && autoFirst[id] === sig) {
+        dupLines.push(line);
+        return;
+      }
       if (id === '' || seen[id]) {
         id = uniqueId(seen);
         fix(T.txns, 'J' + line, id);
       }
       seen[id] = true;
+      if (id.indexOf('A-') === 0 && !(id in autoFirst)) autoFirst[id] = sig;
       if (oldK !== '') fix(T.txns, 'K' + line, '');
       r.txn.id = id;
       txns.push(r.txn);
@@ -1694,7 +2358,7 @@ var BookStore = {
     if (fixes.length) {
       await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + '/values:batchUpdate', { valueInputOption: 'RAW', data: fixes });
     }
-    await BookStore.trimCheckboxes(rest, bookId, vals(res, 0));
+    await BookStore.trimCheckboxes(rest, bookId, vals(res, 0), dupLines);
     // 순서 규칙은 여기 한 곳 (#111): C-2 는 새 기록을 시트 맨 아래에 붙이지만 화면·순수 함수는 "목록 앞 = 가장 최근 입력"을 전제한다
     // (원본은 새 줄을 2행에 끼워 넣었다). 번호 붙이기·겹친 번호·problems 줄 번호는 위에서 시트 순서로 이미 끝났으므로 마지막에 뒤집는다.
     // 이 목록의 인덱스는 시트 줄 번호가 아니다 — 쓰기는 앱 번호(J열)로 줄을 찾는다 (txnRowsById).
@@ -1703,12 +2367,20 @@ var BookStore = {
     return { book: book, problems: problems };
   },
 
+  // 지금 한국 시각 'YYYY-MM-DD HH:mm:ss' (src nowKSTString_ 과 같은 모양)
+  nowKST: function () {
+    var p = {};
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; });
+    return p.year + '-' + p.month + '-' + p.day + ' ' + p.hour + ':' + p.minute + ':' + p.second;
+  },
+
   /**
    * 빈 줄(A:K 가 모두 비었거나 G 의 FALSE 뿐)의 G열 체크박스(값·입력 검사)를 지운다. txnRows = loadBook 이 읽은 내역 A2:K 줄 배열.
    * 이어진 줄마다 updateCells 하나, 전부 :batchUpdate 한 번. 정리할 것이 없으면 요청 0번(시트 속성도 읽지 않는다).
    * 실패해도 던지지 않는다 — 읽기는 그대로 돌려주고 다음에 열 때 다시 정리한다.
    */
-  trimCheckboxes: async function (rest, bookId, txnRows) {
+  trimCheckboxes: async function (rest, bookId, txnRows, dupLines) {
     try {
       var spans = []; // [시작 줄 인덱스(0부터, 시트 기준), 끝 줄 인덱스(포함 안 함)]
       (txnRows || []).forEach(function (row, i) {
@@ -1717,11 +2389,18 @@ var BookStore = {
         var last = spans[spans.length - 1];
         if (last && last[1] === idx) last[1] = idx + 1; else spans.push([idx, idx + 1]);
       });
-      if (!spans.length) return;
+      dupLines = dupLines || [];
+      if (!spans.length && !dupLines.length) return;
       var sheetId = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
-      await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: spans.map(function (sp) {
+      var reqs = spans.map(function (sp) {
         return { updateCells: { range: { sheetId: sheetId, startRowIndex: sp[0], endRowIndex: sp[1], startColumnIndex: 6, endColumnIndex: 7 }, fields: 'userEnteredValue,dataValidation' } };
-      }) });
+      });
+      // 겹친 자동 기록 줄(시트 줄 번호): A:K 값을 비우고 G 체크박스(검사)를 지운다. A~E 입력 검사는 남긴다
+      dupLines.forEach(function (line) {
+        reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 0, endColumnIndex: 11 }, fields: 'userEnteredValue' } });
+        reqs.push({ updateCells: { range: { sheetId: sheetId, startRowIndex: line - 1, endRowIndex: line, startColumnIndex: 6, endColumnIndex: 7 }, fields: 'dataValidation' } });
+      });
+      await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
     } catch (e) { /* 정리는 덤이다. 다음에 다시 */ }
   },
 
@@ -1879,6 +2558,7 @@ var BookStore = {
       var infoSheet = await BookStore.sheetIdOf(rest, bookId, TABS.info);
       var reqs = [BookStore.appendTxnsRequest(txSheet, split.txns)];
       reqs.push(BookStore.infoRowsRequest(infoSheet, lastLine + 1, [BookStore.installToRow(split.install)]));
+      reqs = await BookStore.withInfoGrid(rest, bookId, infoSheet, reqs);
       await rest.json('POST', base + ':batchUpdate', { requests: reqs }, { retry: false });
       return { txns: split.txns, install: split.install };
     }
@@ -1951,6 +2631,23 @@ var BookStore = {
     var n = (rows || []).length;
     while (n > 0 && BookStore.blankRow(rows[n - 1])) n--;
     return n;
+  },
+
+  /**
+   * 정보 탭 격자 한계: reqs 가 정보 탭(infoSheetId)에 쓰는 가장 아래 줄이 지금 rowCount 를 넘으면 appendDimension(ROWS)을 맨 앞에 끼워 돌려준다
+   * (넘는 updateCells 가 하나라도 있으면 Sheets 는 batch 전체를 거절한다). rowCount 는 캐시가 아니라 이 쓰기 직전에 새로 읽는다. 넘지 않으면 reqs 그대로
+   */
+  withInfoGrid: async function (rest, bookId, infoSheetId, reqs) {
+    var need = 0;
+    reqs.forEach(function (q) {
+      if (q.updateCells && q.updateCells.range.sheetId === infoSheetId) need = Math.max(need, q.updateCells.range.endRowIndex);
+    });
+    if (!need) return reqs;
+    var res = await rest.json('GET', Rest.SHEETS + encodeURIComponent(bookId) + '?fields=' + encodeURIComponent('sheets.properties(sheetId,gridProperties.rowCount)'));
+    var count = 0;
+    (res.sheets || []).forEach(function (sh) { if (sh.properties.sheetId === infoSheetId) count = sh.properties.gridProperties.rowCount; });
+    if (need <= count) return reqs;
+    return [{ appendDimension: { sheetId: infoSheetId, dimension: 'ROWS', length: Math.max(50, need - count) } }].concat(reqs);
   },
 
   // 정보 탭 I:L 의 startLine 줄부터 rows(묶음 줄 배열) 를 쓰는 updateCells 요청. 빈 칸은 비워진다
@@ -2032,6 +2729,7 @@ var BookStore = {
       if (rw) reqs.push(rw);
       BookStore.renumberRequests(sheetId, renumbered, rows).forEach(function (q) { reqs.push(q); });
     }
+    reqs = await BookStore.withInfoGrid(rest, bookId, await BookStore.sheetIdOf(rest, bookId, TABS.info), reqs);
     await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs });
     return { removed: removed, installs: affected, renumbered: renumbered };
   },
@@ -2082,8 +2780,181 @@ var BookStore = {
       BookStore.renumberRequests(sheetId, existingFix, rows).forEach(function (q) { reqs.push(q); });
     }
     if (!reqs.length) return true;
+    reqs = await BookStore.withInfoGrid(rest, bookId, await BookStore.sheetIdOf(rest, bookId, TABS.info), reqs);
     await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs }, { retry: false });
     return true;
+  },
+
+  // ── 카테고리 더하기·이름 바꾸기·지우기·순서. 사용자 동작 하나 = :batchUpdate 한 번 (이름 바꾸기가 나뉘어 써지다 반쯤 남는 일이 없게) ──
+
+  // 값 하나를 updateCells 칸으로: 글자가 '=' 로 시작하는 수식은 formulaValue (예산 O·P)
+  formulaCell: function (f) { return { userEnteredValue: { formulaValue: f } }; },
+
+  // 줄 목록을 (시트 sheetId 의) startLine 줄·c0..c1 열에 쓰는 updateCells 요청. 값만 쓴다(fields) — 체크박스·입력 검사는 그대로
+  rowsRequest: function (sheetId, startLine, c0, c1, rows) {
+    return { updateCells: {
+      range: { sheetId: sheetId, startRowIndex: startLine - 1, endRowIndex: startLine - 1 + rows.length, startColumnIndex: c0, endColumnIndex: c1 },
+      rows: rows.map(function (r) { return { values: r }; }),
+      fields: 'userEnteredValue',
+    } };
+  },
+
+  // 번호 열(J:J, Y:Y)의 값 → 줄 번호 (첫 줄이 이긴다). 첫 줄은 머리글
+  idLines: function (col) {
+    var map = {};
+    for (var i = 1; i < col.length; i++) {
+      var id = col[i] && col[i][0] != null ? String(col[i][0]) : '';
+      if (id !== '' && !(id in map)) map[id] = i + 1;
+    }
+    return map;
+  },
+
+  /**
+   * 목록 변경 ch = { categories?, payMethods?, budgets?, txns(바뀐 것만)?, rules(바뀐 것만)? } 를 시트에 쓰고 book 에 반영한다 (src applyListChange_ 와 같은 결과).
+   * 쓰기 직전 values:batchGet 한 번(번호 열·지금 묶음 길이) → :batchUpdate 한 번. 번호가 없는 거래·규칙이 있으면 쓰기 없이 던진다.
+   * 내역·규칙은 번호로 찾은 그 줄만(A:K 의 J=같은 번호·K 빈칸 / K:Z), 예산·카테고리·결제 수단은 묶음째(빈 줄로 채움).
+   * 같은 순간 다른 기기가 예산·목록을 고치면 나중 저장이 이긴다 (설계 §5-1). 보는 탭은 다시 쓰지 않는다. book 을 고쳐 돌려준다.
+   */
+  applyListChange: async function (rest, bookId, book, ch) {
+    var q = BookStore.q, T = TABS;
+    var txns = ch.txns || [], rules = ch.rules || [];
+    var got = await BookStore.readValues(rest, bookId, [q(T.txns, 'J:J'), q(T.settings, 'Y:Y'), q(T.budgets, 'A2:N'), q(T.settings, 'A2:E'), q(T.settings, 'G2:I')]);
+    var txnLines = BookStore.idLines(got[0]), ruleLines = BookStore.idLines(got[1]);
+    txns.forEach(function (t) { if (!(t.id in txnLines)) throw new Error(BookStore.notFoundMessage); });
+    rules.forEach(function (r) { if (!(r.id in ruleLines)) throw new Error(BookStore.notFoundMessage); });
+    var reqs = [];
+    var cell = BookStore.cellOf;
+    function pad(rows, used, width) {
+      var out = rows.slice();
+      while (out.length < used) { var b = []; for (var c = 0; c < width; c++) b.push({}); out.push(b); }
+      return out;
+    }
+    if (txns.length) {
+      var txnSheet = await BookStore.sheetIdOf(rest, bookId, T.txns);
+      txns.forEach(function (t) { // 수정·다시 센 줄과 같은 모양: J 에 같은 번호, K 빈칸
+        reqs.push(BookStore.rowsRequest(txnSheet, txnLines[t.id], 0, 11, [txnToRow(t).concat([t.id, '']).map(cell)]));
+      });
+    }
+    if (rules.length || ch.categories || ch.payMethods) var setSheet = await BookStore.sheetIdOf(rest, bookId, T.settings);
+    rules.forEach(function (r) { reqs.push(BookStore.rowsRequest(setSheet, ruleLines[r.id], 10, 26, [ruleToRow(r).map(cell)])); });
+    if (ch.budgets) {
+      var budSheet = await BookStore.sheetIdOf(rest, bookId, T.budgets);
+      var brows = ch.budgets.map(function (b, i) { return budgetToRow(b).map(cell).concat(budgetFormulas(i + 2).map(BookStore.formulaCell)); });
+      brows = pad(brows, BookStore.lastLineOf(got[2]), 16);
+      if (brows.length) reqs.push(BookStore.rowsRequest(budSheet, 2, 0, 16, brows));
+    }
+    if (ch.categories) {
+      var crows = pad(ch.categories.map(function (c) { return categoryToRow(c).map(cell); }), BookStore.lastLineOf(got[3]), 5);
+      if (crows.length) reqs.push(BookStore.rowsRequest(setSheet, 2, 0, 5, crows));
+    }
+    if (ch.payMethods) {
+      var prows = pad(ch.payMethods.map(function (p) { return payToRow(p).map(cell); }), BookStore.lastLineOf(got[4]), 3);
+      if (prows.length) reqs.push(BookStore.rowsRequest(setSheet, 2, 6, 9, prows));
+    }
+    if (reqs.length) await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs }, { retry: false });
+    function merge(list, changed) {
+      var map = {};
+      (changed || []).forEach(function (x) { map[x.id] = x; });
+      return list.map(function (x) { return map[x.id] || x; });
+    }
+    book.txns = merge(book.txns, ch.txns);
+    book.rules = merge(book.rules, ch.rules);
+    if (ch.budgets) book.budgets = ch.budgets;
+    if (ch.categories) book.categories = ch.categories;
+    if (ch.payMethods) book.payMethods = ch.payMethods;
+    return book;
+  },
+
+  maxOrder: function (list) {
+    var max = 0;
+    list.forEach(function (x) { if ((x.order || 0) > max) max = x.order || 0; });
+    return max;
+  },
+  nameArg: function (v) { return v === null || v === undefined ? null : String(v); },
+
+  /** 카테고리 추가(oldName === null)·고치기(이름·아이콘·색). src api_saveCategory 와 같은 검사·문구·계산. { book } */
+  saveCategory: async function (rest, bookId, oldName, cat) {
+    cat = cat || {};
+    var input = { name: String(cat.name == null ? '' : cat.name).trim(), type: String(cat.type), icon: String(cat.icon), color: Number(cat.color) };
+    var old = BookStore.nameArg(oldName);
+    var book = (await BookStore.loadBook(rest, bookId, {})).book;
+    var prev = old === null ? null : findByName_(book.categories, old);
+    if (old !== null && !prev) throw new Error(BookStore.notFoundMessage);
+    var reason = validateCategory(input, book.categories, old);
+    if (reason) throw new Error(reason);
+    var ch;
+    if (prev) {
+      ch = renameCategory(book, old, input.name);
+      ch.categories.forEach(function (c) { if (c.name === input.name) { c.icon = input.icon; c.color = input.color; } });
+      if (old === input.name) delete ch.budgets; // 아이콘·색만: 예산은 그대로
+    } else {
+      var order = BookStore.maxOrder(book.categories.filter(function (c) { return c.type === input.type; })) + 1;
+      ch = { categories: book.categories.concat([{ name: input.name, type: input.type, order: order, icon: input.icon, color: input.color }]) };
+    }
+    await BookStore.applyListChange(rest, bookId, book, ch);
+    return { book: book };
+  },
+
+  /** 카테고리 지우기: 내역·자동 기록은 moveTo 로, 예산은 모든 달을 moveTo 에 더한다. src api_deleteCategory 와 같다. { book } */
+  deleteCategory: async function (rest, bookId, name, moveTo) {
+    name = String(name);
+    moveTo = BookStore.nameArg(moveTo);
+    var book = (await BookStore.loadBook(rest, bookId, {})).book;
+    var ch = deleteCategory(book, name, moveTo, todayKST(new Date()));
+    await BookStore.applyListChange(rest, bookId, book, ch);
+    return { book: book };
+  },
+
+  /** 카테고리 순서. names = 모든 카테고리 이름(보이는 순서). 순서 번호는 유형마다 1부터. { book } */
+  reorderCategories: async function (rest, bookId, names) {
+    names = (Array.isArray(names) ? names : []).map(String);
+    var book = (await BookStore.loadBook(rest, bookId, {})).book;
+    var n = {};
+    var categories = reorder(book.categories, names).map(function (c) {
+      n[c.type] = (n[c.type] || 0) + 1;
+      c.order = n[c.type];
+      return c;
+    });
+    await BookStore.applyListChange(rest, bookId, book, { categories: categories });
+    return { book: book };
+  },
+
+  /**
+   * 리포트 탭('이번 달'·'월별 결산')을 수식으로 다시 쓰고 합의 시안 모양으로 꾸민 뒤 정보 탭에 리포트 버전을 남긴다
+   * (작업 22·22b, 설계 §5-4). :batchUpdate 한 번(전부 아니면 전무), 재시도 없음.
+   * 두 리포트 탭: 옛 조건부 서식 지우기 → 병합 풀기 → 값·서식 통째로 지우기(C12) → 기준 칸 수식 → 서식·병합·크기·격자선 → 조건부 서식 (ReportTabs.tabRequests).
+   * 데이터 탭: 머리줄 서식·1줄 고정·열 너비만 (ReportTabs.dataHeaderRequests). 값·입력 검사는 건드리지 않는다.
+   * 쓰기 직전에 탭 번호와 탭마다 조건부 서식 개수를 한 번 읽는다 (다시 써도 규칙이 겹치지 않게 지울 개수).
+   * 보호(엄격, 주인만)는 건드리지 않는다 — 주인 기기만 부른다.
+   * infoRow = loadBook 이 읽은 '리포트 버전' 줄 번호. 0 이면(키 줄 없음) 쓰기 직전에 정보 A:B 를 새로 읽어 줄을 정한다(C5):
+   * 그사이 키 줄이 생겼으면 그 줄, 아니면 마지막 내용 줄 다음.
+   */
+  writeReportTabs: async function (rest, bookId, infoRow) {
+    var R = ReportTabs;
+    var meta = await rest.json('GET', Rest.SHEETS + encodeURIComponent(bookId) + '?fields=' +
+      encodeURIComponent('sheets(properties(sheetId,title),conditionalFormats(ranges(sheetId)))'));
+    var ids = {}, rules = {};
+    (meta.sheets || []).forEach(function (sh) {
+      ids[sh.properties.title] = sh.properties.sheetId;
+      rules[sh.properties.title] = (sh.conditionalFormats || []).length;
+    });
+    [TABS.month, TABS.yearly, TABS.txns, TABS.budgets, TABS.settings, TABS.info].forEach(function (t) {
+      if (!(t in ids)) throw new Error('탭을 찾을 수 없어요: ' + t);
+    });
+    var info = ids[TABS.info];
+    var line = infoRow || 0;
+    if (!line) {
+      var rows = (await BookStore.readValues(rest, bookId, [BookStore.q(TABS.info, 'A1:B')]))[0];
+      rows.forEach(function (r, i) { if (i > 0 && r && r[0] === R.INFO_KEY) line = i + 1; });
+      if (!line) line = BookStore.lastLineOf(rows) + 1;
+    }
+    var reqs = []
+      .concat(R.tabRequests(ids[TABS.month], 'month', rules[TABS.month]))
+      .concat(R.tabRequests(ids[TABS.yearly], 'yearly', rules[TABS.yearly]))
+      .concat(R.dataHeaderRequests(ids));
+    reqs.push(BookStore.rowsRequest(info, line, 0, 2, [[R.INFO_KEY, R.REPORT_VERSION].map(BookStore.cellOf)]));
+    reqs = await BookStore.withInfoGrid(rest, bookId, info, reqs);
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs }, { retry: false });
   },
 
   /**
@@ -2132,9 +3003,63 @@ var BookStore = {
 };
 
 ;
+// 앱을 열 때 밀린 자동 기록 채우기 (C-2 에는 06시 실행이 없다). 설계 §5-3.
+// 순수 계산(idFor·plan)과 쓰기(run)를 나눈다. src 의 dueOccurrences·buildAutoEntries 는 그대로 쓰고 makeId 만 주입한다 (Pure.html 전역).
+// 같은 순간 두 기기가 열어도 거래 번호가 'A-규칙-날짜'로 같으므로, 겹쳐 쓰여도 loadBook 이 하나로 보고 다음 기회에 아래 줄을 비운다.
+var AutoFill = {
+  idFor: function (ruleId, date) { return 'A-' + ruleId + '-' + date; },
+
+  /**
+   * 채울 거래와 로그. 범위 = 지난달 1일 ~ today. dueOccurrences 는 today 가 든 달만 보므로
+   * 지난달 말일 기준 한 번, today 기준 한 번 부른다. 횟수 있는 규칙은 두 번째 부름에 첫 번째 계획을 이미 기록한 것으로 넘긴다.
+   * book.txns 에 같은 번호가 이미 있는 날은 뺀다.
+   */
+  plan: function (book, today, stamp) {
+    var prevLast = fromSerial(toSerial(today.slice(0, 8) + '01') - 1);
+    var log = book.ruleLog || [];
+    var due1 = dueOccurrences(book.rules, log, prevLast);
+    var asLogged = due1.map(function (o) { return { ruleId: o.ruleId, date: o.date, txnId: '', ranAt: '' }; });
+    var due2 = dueOccurrences(book.rules, log.concat(asLogged), today);
+    var have = {};
+    (book.txns || []).forEach(function (t) { have[t.id] = true; });
+    var due = due1.concat(due2).filter(function (o) { return !have[AutoFill.idFor(o.ruleId, o.date)]; });
+    // 번호는 due 에서 미리 만들어 둔다. buildAutoEntries 는 due 순서대로 makeId 를 한 번씩 부른다 (규칙을 못 찾으면 건너뛰지만 due 는 rules 에서 나왔다)
+    var ids = due.map(function (o) { return AutoFill.idFor(o.ruleId, o.date); });
+    var i = 0;
+    return buildAutoEntries(book.rules, due, stamp, function () { return ids[i++]; });
+  },
+
+  /**
+   * 쓰기 직전 다시 읽고(loadBook) 계획이 비면 쓰기 0번. 아니면 정보 D:G 마지막 줄을 읽어 :batchUpdate 한 번
+   * (내역 appendCells + 정보 updateCells), 재시도 없음. 가족도 쓴다 (정보 탭 보호는 경고뿐).
+   */
+  run: async function (rest, bookId, today) {
+    var loaded = await BookStore.loadBook(rest, bookId, {});
+    var out = AutoFill.plan(loaded.book, today, BookStore.nowKST());
+    if (!out.txns.length) return { added: [] };
+    var lastLine = Math.max(1, BookStore.lastLineOf((await BookStore.readValues(rest, bookId, [BookStore.q(TABS.info, 'D:G')]))[0]));
+    var txSheet = await BookStore.sheetIdOf(rest, bookId, TABS.txns);
+    var infoSheet = await BookStore.sheetIdOf(rest, bookId, TABS.info);
+    var logRows = out.logs.map(function (l) {
+      return { values: [l.ruleId, toSerial(l.date), l.txnId, l.ranAt].map(BookStore.cellOf) };
+    });
+    var reqs = [
+      BookStore.appendTxnsRequest(txSheet, out.txns),
+      { updateCells: {
+        range: { sheetId: infoSheet, startRowIndex: lastLine, endRowIndex: lastLine + logRows.length, startColumnIndex: 3, endColumnIndex: 7 },
+        rows: logRows, fields: 'userEnteredValue',
+      } },
+    ];
+    reqs = await BookStore.withInfoGrid(rest, bookId, infoSheet, reqs); // 로그가 격자 끝에 닿았으면 줄을 늘리는 요청을 맨 앞에
+    await rest.json('POST', Rest.SHEETS + encodeURIComponent(bookId) + ':batchUpdate', { requests: reqs }, { retry: false });
+    return { added: out.txns };
+  },
+};
+
+;
 // 다리: 화면 코드(App.call → google.script.run)를 고치지 않고, 같은 이름의 호출을 브라우저 안 REST 로 이어 준다.
 // google.script.run.withSuccessHandler(f).withFailureHandler(g).api_x(...) 모양 그대로.
-// 전역으로 쓰는 것: C2, Keys, Rest, BookStore, Login(화면), 그리고 src 순수 함수(todayKST, hasBudgetIn, payPickName)
+// 전역으로 쓰는 것: C2, Keys, Rest, BookStore, ReportTabs, Login(화면), 그리고 src 순수 함수(todayKST, hasBudgetIn, payPickName, normalizeEmail)
 var Bridge = {
   DEFAULT_BOOK_NAME: '우리집 가계부', // src/Api.js 와 같은 값
   SUPPORT_EMAIL: 'support@axonbridge.org',
@@ -2144,7 +3069,7 @@ var Bridge = {
   PREF_TONES: ['forest', 'sand', 'sea', 'lavender'],
   PREF_MODES: ['auto', 'light', 'dark'],
   OFFLINE: '연결이 불안정해요. 잠시 뒤 다시 시도해 주세요',
-  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_restoreTxns', 'api_setHomeHint', 'api_connectBook', 'api_setOnboard', 'api_savePrefs'],
+  HANDLED: ['api_bootstrap', 'api_load', 'api_saveTxn', 'api_deleteTxns', 'api_restoreTxns', 'api_saveCategory', 'api_deleteCategory', 'api_reorderCategories', 'api_setHomeHint', 'api_connectBook', 'api_setOnboard', 'api_savePrefs'],
   TIMES_KEEP: 20,
   // 기기 저장본(moa_book) 형식. 2: 내역 순서가 "앞 = 최근 입력"(작업 18). 1 은 옛 순서라 빠른 길에서 받지 않는다
   BOOK_FORMAT: 2,
@@ -2324,6 +3249,24 @@ var Bridge = {
       } catch (e) { /* 무시 */ }
     }
 
+    // 카테고리를 바꾼 뒤: 돌려받은 book 을 기기 저장본으로 둔다 (다음 loadBook 과 같은 모양 — 내역 순서도 같다). 보고된 문제는 같은 가계부 저장본의 것을 이어받는다
+    function storeBook(s, book) {
+      var rec = read('moa_book', null);
+      var problems = rec && rec.bookId === s.bookId && Array.isArray(rec.problems) ? rec.problems : [];
+      write('moa_book', { v: Bridge.BOOK_FORMAT, bookId: s.bookId, email: s.email, book: book, problems: problems, savedAt: Date.now() });
+    }
+
+    // 부른 기기의 마지막 고른 값(moa_lastpick)의 이름을 바꾼다 (src renameLastPick_ 과 같은 규칙)
+    function renameLastPick(key, from, to) {
+      var pick = read('moa_lastpick', {});
+      if (!pick || typeof pick !== 'object') return;
+      var changed = false;
+      Object.keys(pick).forEach(function (t) {
+        if (pick[t] && pick[t][key] === from) { pick[t][key] = to; changed = true; }
+      });
+      if (changed) write('moa_lastpick', pick);
+    }
+
     // 빠른 길 조건: 열쇠(rt)·세션(bookId)·저장본(v:2, 같은 bookId·email)
     function fastState() {
       try {
@@ -2369,6 +3312,47 @@ var Bridge = {
       }, 0);
     }
 
+    // 앱을 열면 밀린 자동 기록을 뒤에서 채운다 (C-2 에는 06시 실행이 없다). READY 를 돌려준 뒤에 부르고, 같은 화면에서 겹쳐 돌지 않는다.
+    // 실패는 log('auto') 만 — 다음에 열 때 다시 한다. 채운 것이 있으면 화면이 다시 읽는다 (그 읽기가 기기 저장본도 새로 쓴다)
+    var autoFill = deps.autoFill || (typeof AutoFill !== 'undefined' ? AutoFill : null);
+    var autoRunning = false;
+    var autoWait = null; // 빠른 길: 첫 화면 다시 읽기(api_load)가 끝난 뒤에 채운다 (둘 다 loadBook 바로잡기 쓰기를 하므로 겹치지 않게)
+    function scheduleAutoFill(s) {
+      if (!autoFill || autoRunning || !s || !s.bookId) return;
+      autoRunning = true;
+      var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+      later(function () {
+        Promise.resolve().then(function () { return autoFill.run(rest, s.bookId, todayKST(new Date())); }).then(function (r) {
+          autoRunning = false;
+          if (r && r.added && r.added.length > 0) {
+            try { if (win.App && typeof win.App._reload === 'function') win.App._reload(); } catch (e) { /* 무시 */ }
+          }
+        }, function (e) {
+          autoRunning = false;
+          try { log('auto', e && e.message ? e.message : String(e)); } catch (x) { /* 무시 */ }
+        });
+      }, 0);
+    }
+
+    // 리포트 탭 수식 다시 쓰기 (작업 22, 설계 §5-4): 주인 기기에서, 새로 읽은 가계부의 리포트 버전이 지금 수식 버전과 다를 때만, READY 뒤 뒤에서 한 번.
+    // 목록(카테고리·결제 수단)이 바뀌어도 수식이 설정 탭을 읽으므로 다시 쓰지 않는다. 가족·버전 같음 → 요청 0번.
+    // 한 화면에서 한 번만 시도한다 (실패는 log('report') 만 — 다음 열기에 다시). 반드시 gate() 가 새로 확인한 세션과 막 읽은 book 으로 부른다
+    var reportVersion = deps.reportVersion || (typeof ReportTabs !== 'undefined' ? ReportTabs.REPORT_VERSION : null);
+    var reportTried = false;
+    function scheduleReport(s, book) {
+      if (reportTried || !reportVersion || !s || !s.bookId || !book || !book.info || typeof store.writeReportTabs !== 'function') return;
+      if (normalizeEmail(s.email) !== normalizeEmail(book.info.owner) || normalizeEmail(book.info.owner) === '') return;
+      if (book.info.reportVersion === reportVersion) return;
+      reportTried = true;
+      var row = book.info._reportRow || 0;
+      var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+      later(function () {
+        Promise.resolve().then(function () { return store.writeReportTabs(rest, s.bookId, row); }).then(function () { /* 다음 읽기가 새 버전을 본다 */ }, function (e) {
+          try { log('report', e && e.message ? e.message : String(e)); } catch (x) { /* 무시 */ }
+        });
+      }, 0);
+    }
+
     var fns = {
       api_bootstrap: async function () {
         var fast = fastState();
@@ -2377,8 +3361,11 @@ var Bridge = {
           showTimes({ open: now() - startAt });
           // 첫 그림 뒤에 뒤에서 새로 읽는다 (화면의 _reload 가 경합을 막는다)
           var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+          autoWait = fast.s;
           later(function () {
-            try { if (win.App && typeof win.App._reload === 'function') win.App._reload(); } catch (e) { /* 무시 */ }
+            var started = false;
+            try { if (win.App && typeof win.App._reload === 'function') { win.App._reload(); started = true; } } catch (e) { /* 무시 */ }
+            if (!started && autoWait) { var w = autoWait; autoWait = null; scheduleAutoFill(w); } // 다시 읽기를 못 시작하면 바로 채운다
           }, 0);
           return out;
         }
@@ -2407,18 +3394,25 @@ var Bridge = {
         saveBook(s, loaded);
         showTimes({ open: t2 - startAt, refresh: t1 - t0, sheet: t2 - t1 });
         scheduleShareSync(s);
+        scheduleAutoFill(s);
+        scheduleReport(s, loaded.book);
         return ready(s, loaded.book, loaded.problems);
       },
       api_load: async function () {
-        var s = await gate();
-        var loaded;
-        try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (e) {
-          if (lostForFamily(s, e)) return new Promise(function () {});
-          throw e;
+        try {
+          var s = await gate();
+          var loaded;
+          try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (e) {
+            if (lostForFamily(s, e)) return new Promise(function () {});
+            throw e;
+          }
+          saveBook(s, loaded);
+          scheduleShareSync(s); // 열쇠 확인(gate)에서 막 받은 세션으로만 맞춘다 (저장된 moa_sess 는 오래됐을 수 있다)
+          scheduleReport(s, loaded.book); // 빠른 길은 저장본이 아니라 여기서 새로 읽은 book 으로 판단한다
+          return loaded;
+        } finally {
+          if (autoWait) { var w = autoWait; autoWait = null; scheduleAutoFill(w); } // 빠른 길의 첫 다시 읽기가 끝났다 (실패해도 채우기는 시도한다)
         }
-        saveBook(s, loaded);
-        scheduleShareSync(s); // 열쇠 확인(gate)에서 막 받은 세션으로만 맞춘다 (저장된 moa_sess 는 오래됐을 수 있다)
-        return loaded;
       },
       api_connectBook: async function (fileId) {
         var s = await gate();
@@ -2473,6 +3467,27 @@ var Bridge = {
         var ok = await store.restoreTxns(rest, s.bookId, txns, installs);
         patchBook(s, { restored: txns || [], installs: installs || [] });
         return ok;
+      },
+      api_saveCategory: async function (oldName, cat) {
+        var s = await gate();
+        var out = await store.saveCategory(rest, s.bookId, oldName, cat);
+        storeBook(s, out.book);
+        var newName = String((cat && cat.name) == null ? '' : cat.name).trim();
+        if (oldName !== null && oldName !== undefined && String(oldName) !== newName) renameLastPick('category', String(oldName), newName);
+        return out;
+      },
+      api_deleteCategory: async function (name, moveTo) {
+        var s = await gate();
+        var out = await store.deleteCategory(rest, s.bookId, name, moveTo);
+        storeBook(s, out.book);
+        if (moveTo !== null && moveTo !== undefined) renameLastPick('category', String(name), String(moveTo));
+        return out;
+      },
+      api_reorderCategories: async function (names) {
+        var s = await gate();
+        var out = await store.reorderCategories(rest, s.bookId, names);
+        storeBook(s, out.book);
+        return out;
       },
       api_setHomeHint: async function (action) {
         if (action !== 'later' && action !== 'done') throw new Error('안내 단계를 확인해 주세요');
