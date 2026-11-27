@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '1eadd8f-202611271211';
+C2.VERSION = '1d80aa1-202611271217';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -3334,14 +3334,14 @@ var Bridge = {
       }, 0);
     }
 
-    // 리포트 탭 수식 다시 쓰기 (작업 22, 설계 §5-4): 주인 기기에서, 새로 읽은 가계부의 리포트 버전이 지금 수식 버전과 다를 때만, READY 뒤 뒤에서 한 번.
+    // 리포트 탭 수식 다시 쓰기 (작업 22, 설계 §5-4): 구매자 기기에서, 새로 읽은 가계부의 리포트 버전이 지금 수식 버전과 다를 때만, READY 뒤 뒤에서 한 번.
     // 목록(카테고리·결제 수단)이 바뀌어도 수식이 설정 탭을 읽으므로 다시 쓰지 않는다. 가족·버전 같음 → 요청 0번.
     // 한 화면에서 한 번만 시도한다 (실패는 log('report') 만 — 다음 열기에 다시). 반드시 gate() 가 새로 확인한 세션과 막 읽은 book 으로 부른다
     var reportVersion = deps.reportVersion || (typeof ReportTabs !== 'undefined' ? ReportTabs.REPORT_VERSION : null);
     var reportTried = false;
     function scheduleReport(s, book) {
       if (reportTried || !reportVersion || !s || !s.bookId || !book || !book.info || typeof store.writeReportTabs !== 'function') return;
-      if (normalizeEmail(s.email) !== normalizeEmail(book.info.owner) || normalizeEmail(book.info.owner) === '') return;
+      if (s.role !== 'buyer') return; // 구매자(라이선스 보유자) 기기만. 정보 탭 소유자 글자는 시험용 사본에서 판매자 계정이라 믿지 않는다
       if (book.info.reportVersion === reportVersion) return;
       reportTried = true;
       var row = book.info._reportRow || 0;
