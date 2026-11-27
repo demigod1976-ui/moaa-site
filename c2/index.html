@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '1d80aa1-202611271217';
+C2.VERSION = 'c5b4240-202611271234';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -1835,7 +1835,7 @@ var Rest = {
 // 그 줄 첫 칸 글자로 판정하는 조건부 서식 (구글 시트 조건부 서식은 굵게·글자색·배경만 된다 — 크기·테두리는 고정 줄만).
 // 하루 여유(남은 날로 나눈 값)는 넣지 않는다 (#53 — 시안에는 있지만 그 뒤 결정으로 빠짐).
 var ReportTabs = {
-  REPORT_VERSION: 'c2-2',
+  REPORT_VERSION: 'c2-3',
   INFO_KEY: '리포트 버전',
   // 구역 제목 (시안 글자). 조건부 서식이 이 글자로 굵게 만든다
   SECTION_TITLES: ['카테고리별', '이번 달 큰 지출 5건', '결제 수단별', '수입', '카테고리별 사용', '예산 대비 남음', '한 달 살림', '결제 수단별 지출'],
@@ -2143,7 +2143,7 @@ var ReportTabs = {
     L.merges.forEach(function (m) { reqs.push({ mergeCells: { range: R.grid(sheetId, m), mergeType: 'MERGE_ALL' } }); });
     Object.keys(L.cols).sort().forEach(function (l) { reqs.push(R.dimRequest(sheetId, 'COLUMNS', R.colIndex(l), L.cols[l])); });
     Object.keys(L.rows).forEach(function (n) { reqs.push(R.dimRequest(sheetId, 'ROWS', Number(n) - 1, L.rows[n])); });
-    reqs.push({ updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { hideGridlines: true } }, fields: 'gridProperties.hideGridlines' } });
+    reqs.push({ updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { hideGridlines: true, frozenRowCount: 0, frozenColumnCount: 0 } }, fields: 'gridProperties.hideGridlines,gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } });
     L.rules.forEach(function (r, k) {
       var fmt = {}, tf = {};
       if (r.bg) fmt.backgroundColor = R.rgb(r.bg);
@@ -3927,7 +3927,7 @@ var Version = {
       if (!v || v === deps.current) return false;
       if (deps.session.getItem('moa_reloaded') === v) return false; // 같은 값으로 이미 한 번 했으면 멈춘다 (무한 반복 방지)
       deps.session.setItem('moa_reloaded', v);
-      deps.reload();
+      await deps.reload();
       return true;
     } catch (e) { return false; } // 오프라인이면 그냥 연다
   },
@@ -3937,7 +3937,11 @@ var Version = {
       current: C2.VERSION,
       fetchVersion: function () { return win.fetch('version.json', { cache: 'no-store' }).then(function (r) { return r.json(); }); },
       session: win.sessionStorage,
-      reload: function () { win.location.reload(); }
+      // 사이트가 index.html 을 잠시(max-age) 저장해 두게 하므로, 먼저 이 화면의 저장본을 새로 받아 둔 뒤 새로 고친다
+      reload: async function () {
+        try { await win.fetch(win.location.href.split('#')[0], { cache: 'reload' }); } catch (e) { /* 실패해도 새로 고침은 한다 */ }
+        win.location.reload();
+      }
     });
   }
 };
