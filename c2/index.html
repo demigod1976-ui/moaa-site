@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '20920d0-202611281021';
+C2.VERSION = '022a651-202611281124';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -2869,11 +2869,7 @@ var BookStore = {
       var now = parsed(got[2], function (row) { return parseBudgetRow(row, ctx); }, 'budget');
       if (JSON.stringify(now.map(budgetToRow)) !== JSON.stringify((book.budgets || []).map(budgetToRow))) changed = true;
     }
-    if (changed) {
-      var e = new Error(BookStore.listChangedMessage);
-      e.code = 'list_changed';
-      throw e;
-    }
+    if (changed) BookStore.throwListChanged();
   },
 
   /**
@@ -2940,6 +2936,11 @@ var BookStore = {
     list.forEach(function (x) { if ((x.order || 0) > max) max = x.order || 0; });
     return max;
   },
+  throwListChanged: function () {
+    var e = new Error(BookStore.listChangedMessage);
+    e.code = 'list_changed';
+    throw e;
+  },
   nameArg: function (v) { return v === null || v === undefined ? null : String(v); },
 
   /** 카테고리 추가(oldName === null)·고치기(이름·아이콘·색). src api_saveCategory 와 같은 검사·문구·계산. { book } */
@@ -2949,7 +2950,7 @@ var BookStore = {
     var old = BookStore.nameArg(oldName);
     var book = (await BookStore.loadBook(rest, bookId, {})).book;
     var prev = old === null ? null : findByName_(book.categories, old);
-    if (old !== null && !prev) throw new Error(BookStore.notFoundMessage);
+    if (old !== null && !prev) BookStore.throwListChanged(); // 화면은 옛 목록(다른 기기가 이름을 바꾸거나 지움) → 최신 목록으로
     var reason = validateCategory(input, book.categories, old);
     if (reason) throw new Error(reason);
     var ch;
@@ -2970,6 +2971,8 @@ var BookStore = {
     name = String(name);
     moveTo = BookStore.nameArg(moveTo);
     var book = (await BookStore.loadBook(rest, bookId, {})).book;
+    // 화면에 있던 이름이 시트에 없으면 다른 기기가 바꾼 것 → 최신 목록으로 (src 문구 "찾을 수 없어요" 대신)
+    if (!findByName_(book.categories, name) || (moveTo !== null && moveTo !== '' && !findByName_(book.categories, moveTo))) BookStore.throwListChanged();
     var ch = deleteCategory(book, name, moveTo, todayKST(new Date()));
     await BookStore.applyListChange(rest, bookId, book, ch);
     return { book: book };
