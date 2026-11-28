@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '022a651-202611281124';
+C2.VERSION = '04618c5-202611281130';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -3363,10 +3363,19 @@ var Bridge = {
     }
 
     // 최신 book 을 기기 저장본과 열린 화면에 넣는다 (#115·I4 공통)
+    // 열린 창(지우기·고르기)은 옛 목록 기준이라 닫는다 — 그대로 다시 그리면 없는 이름을 찾다 멈춘다(관문 2 실기: '지우는 중…' 그대로).
+    // 편집 화면의 카테고리·결제 수단이 최신 목록에 없으면 목록 화면으로 돌아간다
     function showLatest(s, b) {
       storeBook(s, b);
       try {
-        if (win.App && win.App.state) { win.App.state.book = b; if (typeof win.App.render === 'function') win.App.render(); }
+        var App = win.App;
+        if (!App || !App.state) return;
+        App.state.book = b;
+        if (typeof App.closeSheet === 'function') App.closeSheet();
+        var top = Array.isArray(App.stack) ? App.stack[App.stack.length - 1] : null;
+        var list = top && top.params && top.params.name ? (top.name === 'catEdit' ? b.categories : top.name === 'payEdit' ? b.payMethods : null) : null;
+        if (list && !list.some(function (x) { return x.name === top.params.name; })) App.stack.pop();
+        if (typeof App.render === 'function') App.render();
       } catch (x) { /* 무시 */ }
     }
 
