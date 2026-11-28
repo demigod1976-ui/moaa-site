@@ -1152,7 +1152,7 @@ var C2 = {
 };
 
 ;
-C2.VERSION = '50e890d-202611271344';
+C2.VERSION = '20920d0-202611281021';
 ;
 /**
  * [순수] 라이선스 레코드 규칙.
@@ -1622,7 +1622,8 @@ var Keys = {
       }
       if (myGen !== gen) return { ok: false, why: 'login' }; // 기다리는 사이 로그아웃함
       if (!res || typeof res !== 'object') return { ok: false, why: 'offline' };
-      if (res.session) saveSession(res.session);
+      // 확인 시각(이 기기 시계): 가족 공유 맞춤이 낡은 세션으로 돌지 않게 파일의 마지막 적용 시각과 비교한다 (관문 2 검토 I3)
+      if (res.session) saveSession(Object.assign({}, res.session, { checkedAt: now() }));
       if (!res.ok) {
         if (res.error === 'invalid_grant') { clearAll(); return { ok: false, why: 'login' }; }
         return { ok: false, why: 'offline' }; // google·server·rate_limited·그 밖
@@ -2312,10 +2313,17 @@ var BookStore = {
       if (r.reason) problem(T.budgets, i + 2, r.reason); else budgets.push(r.budget);
     });
 
+    // 자동 기록 로그는 '규칙|날짜'로 하나만 본다 (첫 줄). 두 기기가 엇갈려 채우면 같은 날 로그가 두 줄 남을 수 있는데,
+    // src loggedCount_ 는 줄 수를 세므로 그대로 두면 횟수 규칙이 한 번 덜 채워진다 (관문 2 검토 I2). 시트의 겹친 줄은 지우지 않는다 — 읽을 때 하나로 본다
     var ruleLog = [];
+    var logSeen = {};
     vals(res, 6).forEach(function (row) {
       if (blankRow(row)) return;
-      ruleLog.push({ ruleId: str_(cell_(row, 0)), date: dateCell_(cell_(row, 1)) || '', txnId: str_(cell_(row, 2)), ranAt: str_(cell_(row, 3)) });
+      var date = dateCell_(cell_(row, 1)) || '';
+      var key = str_(cell_(row, 0)) + '|' + date;
+      if (date && logSeen[key]) return; // 날짜를 못 읽은 줄은 원본처럼 그대로 센다
+      logSeen[key] = true;
+      ruleLog.push({ ruleId: str_(cell_(row, 0)), date: date, txnId: str_(cell_(row, 2)), ranAt: str_(cell_(row, 3)) });
     });
     var rules = [];
     var seenRules = {};
@@ -2835,11 +2843,46 @@ var BookStore = {
     return map;
   },
 
+  listChangedMessage: '다른 기기에서 목록이 바뀌었어요 · 최신 목록을 불러왔어요', // 앞부분이 Settings.html SET_ERRORS(/목록이 바뀌었어요/)에 걸린다
+
   /**
-   * 목록 변경 ch = { categories?, payMethods?, budgets?, txns(바뀐 것만)?, rules(바뀐 것만)? } 를 시트에 쓰고 book 에 반영한다 (src applyListChange_ 와 같은 결과).
+   * 묶음째 쓰는 목록(카테고리 A2:E · 결제 수단 G2:I · 예산 A2:N)이 이 변경의 기준(book = loadBook 때 읽은 것)과
+   * 쓰기 직전 읽은 값(got[2..4])에서 다르면 쓰지 않고 던진다 (관문 2 검토 I4 — 그사이 다른 기기가 더한 항목을 덮어 지우지 않게).
+   * 쓰려는 묶음만 본다. 카테고리·결제 수단은 이름 집합, 예산은 읽은 줄 내용. 해석은 loadBook 과 같은 파서(읽지 못한 줄은 뺀다)
+   */
+  checkListBase: function (book, ch, got) {
+    function names(list) { return list.map(function (x) { return x.name; }).sort().join('\n'); }
+    function parsed(rows, parse, key) {
+      var out = [];
+      (rows || []).forEach(function (row) {
+        if (BookStore.blankRow(row)) return;
+        var r = parse(row);
+        if (!r.reason) out.push(r[key]);
+      });
+      return out;
+    }
+    var changed = false;
+    if (ch.categories && names(parsed(got[3], parseCategoryRow, 'category')) !== names(book.categories || [])) changed = true;
+    if (ch.payMethods && names(parsed(got[4], parsePayRow, 'pay')) !== names(book.payMethods || [])) changed = true;
+    if (ch.budgets) {
+      var ctx = { categories: (book.categories || []).map(function (c) { return c.name; }) };
+      var now = parsed(got[2], function (row) { return parseBudgetRow(row, ctx); }, 'budget');
+      if (JSON.stringify(now.map(budgetToRow)) !== JSON.stringify((book.budgets || []).map(budgetToRow))) changed = true;
+    }
+    if (changed) {
+      var e = new Error(BookStore.listChangedMessage);
+      e.code = 'list_changed';
+      throw e;
+    }
+  },
+
+  /**
+   * 목록 변경 ch ={ categories?, payMethods?, budgets?, txns(바뀐 것만)?, rules(바뀐 것만)? } 를 시트에 쓰고 book 에 반영한다 (src applyListChange_ 와 같은 결과).
    * 쓰기 직전 values:batchGet 한 번(번호 열·지금 묶음 길이) → :batchUpdate 한 번. 번호가 없는 거래·규칙이 있으면 쓰기 없이 던진다.
    * 내역·규칙은 번호로 찾은 그 줄만(A:K 의 J=같은 번호·K 빈칸 / K:Z), 예산·카테고리·결제 수단은 묶음째(빈 줄로 채움).
-   * 같은 순간 다른 기기가 예산·목록을 고치면 나중 저장이 이긴다 (설계 §5-1). 보는 탭은 다시 쓰지 않는다. book 을 고쳐 돌려준다.
+   * 묶음째 쓰는 목록이 쓰기 직전 읽은 값과 book(loadBook 때)에서 다르면 쓰지 않고 던진다 (checkListBase, I4). 남는 창은 batchGet→batchUpdate 1왕복.
+   * 이름 바꾸기와 같은 순간 옛 이름으로 저장된 거래는 "건너뜀" 줄로 남는다(검토 M2, 받아들임 — K칸·problems 에 남아 잃지는 않음).
+   * 보는 탭은 다시 쓰지 않는다. book 을 고쳐 돌려준다.
    */
   applyListChange: async function (rest, bookId, book, ch) {
     var q = BookStore.q, T = TABS;
@@ -2848,6 +2891,7 @@ var BookStore = {
     var txnLines = BookStore.idLines(got[0]), ruleLines = BookStore.idLines(got[1]);
     txns.forEach(function (t) { if (!(t.id in txnLines)) throw new Error(BookStore.notFoundMessage); });
     rules.forEach(function (r) { if (!(r.id in ruleLines)) throw new Error(BookStore.notFoundMessage); });
+    BookStore.checkListBase(book, ch, got);
     var reqs = [];
     var cell = BookStore.cellOf;
     function pad(rows, used, width) {
@@ -2988,13 +3032,22 @@ var BookStore = {
    * "앱이 공유한 사람"은 파일 appProperties 의 's:<이메일>' 키 (속성 하나 124바이트 한도라 사람마다 한 키).
    * 성공한 것만 appProperties 에 반영한다. 실패는 경고로 모아 돌려준다 (다른 사람은 계속 진행).
    * shareDiff 는 src/License.js 의 순수 함수 (같은 규칙: 소유자·직접 공유한 사람은 건드리지 않음).
+   * checkedAt = 이 세션을 서버에서 확인한 시각(ms, Keys 가 붙임). 파일 appProperties 'shareAt'(마지막으로 맞춘 세션의 확인 시각)보다
+   * 새롭지 않으면 아무것도 하지 않는다 — 기기 사이 순서를 파일 한 곳에서 정해, 낡은 세션이 막 더하거나 뺀 가족을 되돌리지 않게 (관문 2 검토 I3).
+   * shareAt 은 바꾼 것이 있을 때 같은 PATCH 에 넣는다 (요청 늘지 않음). 지금보다 10분 넘게 앞선 shareAt(시계가 틀린 기기)은 무시한다.
+   * checkedAt 이 없으면(확인 시각 없는 옛 저장 세션) 비교·기록 없이 예전처럼 맞춘다.
    */
-  syncFamilyShares: async function (rest, bookId, ownerEmail, family) {
+  SHARE_AT_KEY: 'shareAt',
+  SHARE_SKEW_MS: 10 * 60 * 1000,
+  syncFamilyShares: async function (rest, bookId, ownerEmail, family, checkedAt) {
     var base = Rest.DRIVE + 'files/' + encodeURIComponent(bookId);
     var warnings = [];
     var perms = ((await rest.json('GET', base + '/permissions?fields=' + encodeURIComponent('permissions(id,emailAddress,type,role)'))).permissions || [])
       .filter(function (p) { return p.type === 'user' && p.emailAddress; });
     var props = (await rest.json('GET', base + '?fields=appProperties')).appProperties || {};
+    var stamp = typeof checkedAt === 'number' && checkedAt > 0 ? checkedAt : 0;
+    var applied = Number(props[BookStore.SHARE_AT_KEY]) || 0;
+    if (stamp && applied && applied >= stamp && applied <= Date.now() + BookStore.SHARE_SKEW_MS) return { warnings: [], skipped: true };
     var managed = Object.keys(props).filter(function (k) { return k.indexOf('s:') === 0; }).map(function (k) { return k.slice(2); });
     var diff = shareDiff(family, perms.map(function (p) { return p.emailAddress; }), ownerEmail, managed);
     var patch = {}, changed = false;
@@ -3020,6 +3073,7 @@ var BookStore = {
       }
     }
     if (changed) {
+      if (stamp) patch[BookStore.SHARE_AT_KEY] = String(stamp);
       try { await rest.json('PATCH', base, { appProperties: patch }); } catch (e) {
         warnings.push('공유 기록 저장 실패: ' + e.message);
       }
@@ -3301,11 +3355,24 @@ var Bridge = {
       var still = isCat ? b.categories.some(function (c) { return c.name === chosen && c.type === String(input.type); })
         : b.payMethods.some(function (p) { return p.name === chosen; });
       if (still) return;
+      showLatest(s, b);
+      throw new Error(msg + ' · 다른 기기에서 목록이 바뀌어 최신 목록을 불러왔어요'); // 앞부분이 Record.html RECORD_INPUT_ERRORS 와 맞아 이유가 그대로 보인다
+    }
+
+    // 최신 book 을 기기 저장본과 열린 화면에 넣는다 (#115·I4 공통)
+    function showLatest(s, b) {
       storeBook(s, b);
       try {
         if (win.App && win.App.state) { win.App.state.book = b; if (typeof win.App.render === 'function') win.App.render(); }
       } catch (x) { /* 무시 */ }
-      throw new Error(msg + ' · 다른 기기에서 목록이 바뀌어 최신 목록을 불러왔어요'); // 앞부분이 Record.html RECORD_INPUT_ERRORS 와 맞아 이유가 그대로 보인다
+    }
+
+    // I4: 카테고리 묶음 쓰기가 "다른 기기에서 목록이 바뀜"(code list_changed)으로 멈췄으면 최신 목록을 읽어 화면에 넣는다. 오류는 그대로 다시 던진다
+    async function listChangedNotice(s, e) {
+      if (!e || e.code !== 'list_changed') return;
+      var loaded;
+      try { loaded = await store.loadBook(rest, s.bookId, {}); } catch (x) { return; }
+      if (loaded && loaded.book) showLatest(s, loaded.book);
     }
 
     // 부른 기기의 마지막 고른 값(moa_lastpick)의 이름을 바꾼다 (src renameLastPick_ 과 같은 규칙)
@@ -3349,16 +3416,22 @@ var Bridge = {
     }
 
     // 구매자 기기가 드라이브 공유를 가족 목록에 맞춘다. 반드시 gate() 가 새로 확인한 세션으로만 부른다. 화면 뒤에서 한 번, 같은 가족·가계부면 건너뛴다
+    // 경고가 있으면 표시에 세션 확인 시각을 붙여 둔다 — 같은 세션으로는 다시 시도하지 않고 새 세션(갱신)에서 한 번 더 (관문 2 검토 I3·T16 #13)
     function scheduleShareSync(s) {
       if (!s || s.role !== 'buyer' || !s.bookId || typeof store.syncFamilyShares !== 'function') return;
       var fam = Array.isArray(s.family) ? s.family : [];
       var mark = s.bookId + '|' + fam.join(',');
-      if (read('moa_famsync', null) === mark) return;
+      var at = typeof s.checkedAt === 'number' ? s.checkedAt : 0;
+      var had = read('moa_famsync', null);
+      if (had === mark || (at && had === mark + '|' + at)) return;
       var later = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
       later(function () {
-        Promise.resolve().then(function () { return store.syncFamilyShares(rest, s.bookId, s.email, fam); }).then(function (r) {
+        Promise.resolve().then(function () { return store.syncFamilyShares(rest, s.bookId, s.email, fam, at || undefined); }).then(function (r) {
           var w = (r && r.warnings) || [];
-          if (w.length) { try { log('share', w.join(' / ')); } catch (x) { /* 무시 */ } } else write('moa_famsync', mark);
+          if (w.length) {
+            try { log('share', w.join(' / ')); } catch (x) { /* 무시 */ }
+            if (at) write('moa_famsync', mark + '|' + at);
+          } else write('moa_famsync', mark);
         }, function (e) {
           try { log('share', e && e.message ? e.message : String(e)); } catch (x) { /* 무시 */ }
         });
@@ -3562,7 +3635,8 @@ var Bridge = {
       },
       api_saveCategory: async function (oldName, cat) {
         var s = await gate();
-        var out = await store.saveCategory(rest, s.bookId, oldName, cat);
+        var out;
+        try { out = await store.saveCategory(rest, s.bookId, oldName, cat); } catch (e) { await listChangedNotice(s, e); throw e; }
         storeBook(s, out.book);
         var newName = String((cat && cat.name) == null ? '' : cat.name).trim();
         if (oldName !== null && oldName !== undefined && String(oldName) !== newName) renameLastPick('category', String(oldName), newName);
@@ -3570,14 +3644,16 @@ var Bridge = {
       },
       api_deleteCategory: async function (name, moveTo) {
         var s = await gate();
-        var out = await store.deleteCategory(rest, s.bookId, name, moveTo);
+        var out;
+        try { out = await store.deleteCategory(rest, s.bookId, name, moveTo); } catch (e) { await listChangedNotice(s, e); throw e; }
         storeBook(s, out.book);
         if (moveTo !== null && moveTo !== undefined) renameLastPick('category', String(name), String(moveTo));
         return out;
       },
       api_reorderCategories: async function (names) {
         var s = await gate();
-        var out = await store.reorderCategories(rest, s.bookId, names);
+        var out;
+        try { out = await store.reorderCategories(rest, s.bookId, names); } catch (e) { await listChangedNotice(s, e); throw e; }
         storeBook(s, out.book);
         return out;
       },
